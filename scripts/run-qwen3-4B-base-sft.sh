@@ -134,4 +134,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
+   ${TENSORBOARD_ARGS[@]} \
    ${MISC_ARGS[@]}
