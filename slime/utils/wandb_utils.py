@@ -47,6 +47,7 @@ def init_wandb_secondary(args, wandb_run_id):
             x_primary=False,
             x_update_finish_state=False,
         ),
+        dir=args.wandb_save_dir
     )
 
     _init_wandb_common()

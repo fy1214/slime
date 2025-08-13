@@ -26,8 +26,10 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 
+SAVE_DIR=/root/exp
+
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B-Base/
+   --hf-checkpoint /root/Qwen3-4B/
    --ref-load /root/Qwen3-4B-Base_torch_dist
    --load /root/Qwen3-4B-Base_slime/
    --save /root/Qwen3-4B-Base_slime/
@@ -79,9 +81,10 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project slime-dev
-   # --wandb-group qwen3-4B-base-sft
+   --use-wandb
+   --wandb-project slime-dev
+   --wandb-group qwen3-4B-base-sft
+   --wandb-save-dir ${SAVE_DIR}/wandb
    # --wandb-key ${WANDB_KEY}
 )
 
@@ -94,6 +97,13 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+)
+
+TENSORBOARD_ARGS=(
+   --use-pytorch-profiler
+   --profile-step-start 10
+   --profile-step-end 12
+   --tensorboard-dir ${SAVE_DIR}/tensorboard
 )
 
 # launch the master node of ray in container

@@ -1,4 +1,5 @@
 import ray
+import torch
 
 from slime.ray.placement_group import create_actor_group, create_placement_groups, create_rollout_manager
 from slime.utils.arguments import parse_args
@@ -46,9 +47,30 @@ def train(args):
     if args.offload:
         ray.get(rollout_manager.async_onload(tags=[GPU_MEMORY_TYPE_KV_CACHE]))
 
+    prof = None
+    if (
+        args.use_pytorch_profiler
+        and torch.distributed.get_rank() == 0
+    ):
+        prof = torch.profiler.profile(
+            schedule=torch.profiler.schedule(
+                wait=max(args.profile_step_start - 1, 0),
+                warmup=1 if args.profile_step_start > 0 else 0,
+                active=args.profile_step_end - args.profile_step_start,
+                repeat=1,
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
+            record_shapes=True,
+            with_stack=True,
+        )
+        prof.start()
+
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
+        if args.use_pytorch_profiler and torch.distributed.get_rank() == 0:
+            prof.step()
+
         # TODO extract the duplicated eval logic
         if args.eval_interval is not None and rollout_id == 0:
             ray.get(rollout_manager.async_eval(rollout_id))
@@ -59,6 +81,15 @@ def train(args):
             ray.get(rollout_manager.async_offload())
 
         ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+
+        # Profiling.
+        if (
+            args.use_pytorch_profiler
+            and rollout_id == args.profile_step_end
+            and torch.distributed.get_rank() == 0
+        ):
+            assert prof is not None
+            prof.stop()
 
         if args.save_interval is not None and (
             (rollout_id + 1) % args.save_interval == 0

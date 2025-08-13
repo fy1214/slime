@@ -448,7 +448,15 @@ def train(rollout_id, model, optimizer, opt_param_scheduler, data_iterator, num_
                 enable_forward_pre_hook(model)
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
-
+            
+        # Profiling.
+        if (
+            args.use_pytorch_profiler
+            and step_id == args.profile_step_end
+            and torch.distributed.get_rank() in args.profile_ranks
+        ):
+            prof.stop()
+        
         # per train step log.
         if (
             mpu.get_data_parallel_rank(with_context_parallel=True) == 0
