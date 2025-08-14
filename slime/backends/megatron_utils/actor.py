@@ -93,6 +93,25 @@ class MegatronTrainRayActor(TrainRayActor):
             self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
 
         Timer().start("train_wait")
+
+        self.prof = None
+        if (
+            args.use_pytorch_profiler
+            and torch.distributed.get_rank() == 0
+        ):
+            self.prof = torch.profiler.profile(
+                schedule=torch.profiler.schedule(
+                    wait=max(args.profile_step_start - 1, 0),
+                    warmup=1 if args.profile_step_start > 0 else 0,
+                    active=args.profile_step_end - args.profile_step_start,
+                    repeat=1,
+                ),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
+                record_shapes=True,
+                with_stack=True,
+            )
+            self.prof.start()
+
         return start_rollout_id
 
     @torch.no_grad()
@@ -235,6 +254,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
             log_rollout_data(rollout_id, self.args, rollout_data)
 
+            if (
+                self.args.use_pytorch_profilerand
+                and torch.distributed.get_rank() == 0
+                and self.prof is not None
+            ):
+                self.prof.step()
+
             # Train
             with timer("actor_train"):
                 train(
@@ -245,6 +271,16 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_iterator,
                     num_microbatches,
                 )
+
+            # Profiling.
+            if (
+                self.args.use_pytorch_profiler
+                and rollout_id == self.args.profile_step_end
+                and torch.distributed.get_rank() == 0
+                and self.prof is not None
+            ):
+                self.prof.stop()
+                self.prof = None
 
         # TODO extract to a function during refactor
         if (path_template := self.args.save_debug_train_data) is not None:

@@ -44,29 +44,9 @@ def train(args):
     # always update weight first so that sglang has the loaded weights from training.
     ray.get(actor_model.async_update_weights())
 
-    prof = None
-    if (
-        args.use_pytorch_profiler
-        and torch.distributed.get_rank() == 0
-    ):
-        prof = torch.profiler.profile(
-            schedule=torch.profiler.schedule(
-                wait=max(args.profile_step_start - 1, 0),
-                warmup=1 if args.profile_step_start > 0 else 0,
-                active=args.profile_step_end - args.profile_step_start,
-                repeat=1,
-            ),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
-            record_shapes=True,
-            with_stack=True,
-        )
-        prof.start()
-
     # async train loop.
     rollout_data_next_future = rollout_manager.async_generate(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        if args.use_pytorch_profiler and torch.distributed.get_rank() == 0:
-            prof.step()
 
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -77,15 +57,6 @@ def train(args):
             rollout_data_next_future = rollout_manager.async_generate(rollout_id + 1)
 
         ray.get(actor_model.async_train(rollout_id, rollout_data_curr_ref))
-
-        # Profiling.
-        if (
-            args.use_pytorch_profiler
-            and rollout_id == args.profile_step_end
-            and torch.distributed.get_rank() == 0
-        ):
-            assert prof is not None
-            prof.stop()
 
         if args.save_interval is not None and (
             (rollout_id + 1) % args.save_interval == 0
