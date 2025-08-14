@@ -255,7 +255,7 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data)
 
             if (
-                self.args.use_pytorch_profilerand
+                self.args.use_pytorch_profiler
                 and torch.distributed.get_rank() == 0
                 and self.prof is not None
             ):
