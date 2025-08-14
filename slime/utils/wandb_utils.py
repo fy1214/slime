@@ -23,6 +23,7 @@ def init_wandb_primary(args):
         name=run_name,
         config=args.__dict__,
         settings=wandb.Settings(mode="shared", x_primary=True),
+        dir=args.wandb_save_dir
     )
 
     _init_wandb_common()

@@ -26,9 +26,10 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 
+SAVE_DIR=/root/exp
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B-base/
+   --hf-checkpoint /root/Qwen3-4B/
    --ref-load /root/Qwen3-4B-Base_torch_dist
    --load /root/Qwen3-4B-Base_slime/
    --save /root/Qwen3-4B-Base_slime/
@@ -51,10 +52,10 @@ SFT_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 1
+   --context-parallel-size 2
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -98,6 +99,13 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
+TENSORBOARD_ARGS=(
+   --use-pytorch-profiler
+   --profile-step-start 10
+   --profile-step-end 12
+   --tensorboard-dir ${SAVE_DIR}/tensorboard
+)
+
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
@@ -126,4 +134,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
+   ${TENSORBOARD_ARGS[@]} \
    ${MISC_ARGS[@]}

@@ -639,7 +639,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
-            parser.add_argument("--wandb-save-dir", type=str, default=None)
             return parser
 
         # debug
@@ -803,33 +802,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_tensorboard_arguments(parser):
-            parser.add_argument(
-                "--use-pytorch-profiler",
-                action="store_true",
-                default=False,
-                help="Use the built-in pytorch profiler.",
-            )
-            parser.add_argument(
-                "--profile-step-start",
-                type=int,
-                default=10,
-                help="Global step to start profiling.",
-            )
-            parser.add_argument(
-                "--profile-step-end",
-                type=int,
-                default=12,
-                help="Global step to stop profiling.",
-            )
-            parser.add_argument(
-                "--tensorboard-dir",
-                type=str,
-                default=None,
-                help="Write TensorBoard logs to this directory.",
-            )
-            return parser
-
         # Add custom arguments in front to prevent overwritten some slime arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -846,7 +818,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        parser = add_tensorboard_arguments(parser)
         # For megatron
         try:
             parser.add_argument("--padded-vocab-size", type=int, default=None)
