@@ -65,7 +65,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 32768
 )
 
 OPTIMIZER_ARGS=(
@@ -99,6 +99,17 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
+PERCISE_ARGS=(
+   --transformer-impl transformer_engine
+   --bf16
+   --fp8-format e4m3
+   --fp8-recipe blockwise
+   --fp8-param-gather
+   --overlap-grad-reduce
+   --overlap-param-gather
+   --record-memory-history
+)
+
 TENSORBOARD_ARGS=(
    --use-pytorch-profiler
    --profile-step-start 10
@@ -117,7 +128,13 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
+    \"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD\": \"1\",
+    \"TORCH_NCCL_AVOID_RECORD_STREAMS\": \"1\",
+    \"NVTE_ALLOW_NONDETERMINISTIC_ALGO\": \"1\",
+    \"NCCL_NVLS_ENABLE\": \"0\",
+    \"NVTE_DEBUG\": \"0\"
   }
 }"
 

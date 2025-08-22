@@ -109,6 +109,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
                 record_shapes=True,
                 with_stack=True,
+                profile_memory=True,
+                with_flops=True,
             )
             self.prof.start()
 
@@ -281,6 +283,14 @@ class MegatronTrainRayActor(TrainRayActor):
             ):
                 self.prof.stop()
                 self.prof = None
+
+                snapshot = torch.cuda.memory._snapshot()
+                from pickle import dump
+
+                dump(
+                    snapshot,
+                    open(f"oom_rank-{torch.distributed.get_rank()}_{self.args.memory_snapshot_path}", 'wb'),
+                )
 
         # TODO extract to a function during refactor
         if (path_template := self.args.save_debug_train_data) is not None:

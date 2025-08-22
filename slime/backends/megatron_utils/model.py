@@ -385,11 +385,7 @@ def train(rollout_id, model, optimizer, opt_param_scheduler, data_iterator, num_
     config = get_model_config(model[0])
     config.grad_scale_func = optimizer.scale_loss
     config.timers = None
-    if isinstance(model[0], DDP) and args.overlap_grad_reduce:
-        assert config.no_sync_func is None, (
-            "When overlap_grad_reduce is True, config.no_sync_func must be None; "
-            "a custom no_sync_func is not supported when overlapping grad-reduce"
-        )
+    if isinstance(model[0], DDP) and args.overlap_grad_reduce and config.no_sync_func is None:
         config.no_sync_func = [model_chunk.no_sync for model_chunk in model]
         if len(model) == 1:
             config.no_sync_func = config.no_sync_func[0]
@@ -415,7 +411,7 @@ def train(rollout_id, model, optimizer, opt_param_scheduler, data_iterator, num_
     # Disable forward pre-hook to start training to ensure that errors in checkpoint loading
     # or random initialization don't propagate to all ranks in first all-gather (which is a
     # no-op if things work correctly).
-    if should_disable_forward_pre_hook(args):
+    if rollout_id == args.start_rollout_id and should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model, param_sync=False)
         # Also remove param_sync_func temporarily so that sync calls made in
         # `forward_backward_func` are no-ops.
@@ -440,7 +436,7 @@ def train(rollout_id, model, optimizer, opt_param_scheduler, data_iterator, num_
             num_microbatches[step_id],
         )
 
-        if step_id == 0:
+        if rollout_id == args.start_rollout_id and step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
             # forward passes will use the forward pre-hook / `param_sync_func` in
             # `forward_backward_func`.
@@ -471,7 +467,7 @@ def train(rollout_id, model, optimizer, opt_param_scheduler, data_iterator, num_
 
             print(f"step {accumulated_step_id}: {log_dict}")
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
-    if pre_hook_enabled:
+    if rollout_id == args.num_rollout - 1 and pre_hook_enabled:
         disable_forward_pre_hook(model)
 
 

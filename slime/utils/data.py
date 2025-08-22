@@ -1,4 +1,5 @@
 import random
+import pandas as pd
 
 from datasets import Dataset as hf_ds
 
@@ -10,7 +11,9 @@ __all__ = ["Dataset"]
 # TODO: don't read the whole file into memory.
 def read_file(path):
     if path.endswith(".jsonl") or path.endswith(".json"):
-        ds = hf_ds.from_json(path)
+        # read the file in pandas
+        df = pd.read_json(path)
+        ds = hf_ds.from_pandas(df)
     elif path.endswith(".parquet"):
         ds = hf_ds.from_parquet(path)
     else:
