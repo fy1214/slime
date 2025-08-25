@@ -115,6 +115,7 @@ TENSORBOARD_ARGS=(
    --profile-step-start 10
    --profile-step-end 12
    --tensorboard-dir ${SAVE_DIR}/tensorboard
+   --record-memory-history
 )
 
 # launch the master node of ray in container
