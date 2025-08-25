@@ -63,7 +63,11 @@ class MegatronTrainRayActor(TrainRayActor):
             self.load_other_checkpoint("ref", args.ref_load)
 
         if self.args.keep_old_actor:
+            # Load old_actor checkpoint
             self.load_other_checkpoint("old_actor", args.load)
+            # Create rollout_actor as a copy of current actor
+            self.weights["rollout_actor"] = {}
+            self.update_cpu_params_dict(self.weights["rollout_actor"])
 
         update_weight_cls = UpdateWeightFromTensor if self.args.colocate else UpdateWeightFromDistributed
         self.weight_updator = update_weight_cls(
@@ -84,7 +88,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.sleep(("model"))
 
         self.rollout_engines = None
-        self.data_buffer = None
 
         self.rollout_data_postprocess = None
         if self.args.rollout_data_postprocess_path is not None:
@@ -93,27 +96,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
 
         Timer().start("train_wait")
-
-        self.prof = None
-        if (
-            args.use_pytorch_profiler
-            and torch.distributed.get_rank() == 0
-        ):
-            self.prof = torch.profiler.profile(
-                schedule=torch.profiler.schedule(
-                    wait=max(args.profile_step_start - 1, 0),
-                    warmup=1 if args.profile_step_start > 0 else 0,
-                    active=args.profile_step_end - args.profile_step_start,
-                    repeat=1,
-                ),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_dir),
-                record_shapes=True,
-                with_stack=True,
-                profile_memory=True,
-                with_flops=True,
-            )
-            self.prof.start()
-
         return start_rollout_id
 
     @torch.no_grad()
@@ -140,7 +122,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory()
         print_memory(f"before offload model")
-        self.update_cpu_params_dict(self.weights["actor"])
         if hasattr(mpu, "destroy_process_groups"):
             mpu.destroy_process_groups()
 
@@ -170,9 +151,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if hasattr(mpu, "reload_process_groups"):
             mpu.reload_process_groups()
         print_memory("after wake_up model")
-
-    def set_data_buffer(self, data_buffer):
-        self.data_buffer = data_buffer
 
     def _get_rollout_data(self, rollout_data_ref):
         # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -225,7 +203,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if self.args.compute_advantages_and_returns:
                 if "ref" in self.weights:
-                    self.update_gpu_params_dict(self.weights["ref"])
                     rollout_data.update(
                         self.compute_log_prob(
                             "ref",
@@ -256,13 +233,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
             log_rollout_data(rollout_id, self.args, rollout_data)
 
-            if (
-                self.args.use_pytorch_profiler
-                and torch.distributed.get_rank() == 0
-                and self.prof is not None
-            ):
-                self.prof.step()
-
             # Train
             with timer("actor_train"):
                 train(
@@ -272,24 +242,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.opt_param_scheduler,
                     data_iterator,
                     num_microbatches,
-                )
-
-            # Profiling.
-            if (
-                self.args.use_pytorch_profiler
-                and rollout_id == self.args.profile_step_end
-                and torch.distributed.get_rank() == 0
-                and self.prof is not None
-            ):
-                self.prof.stop()
-                self.prof = None
-
-                snapshot = torch.cuda.memory._snapshot()
-                from pickle import dump
-
-                dump(
-                    snapshot,
-                    open(f"oom_rank-{torch.distributed.get_rank()}_{self.args.memory_snapshot_path}", 'wb'),
                 )
 
         # TODO extract to a function during refactor
@@ -306,6 +258,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 ),
                 path,
             )
+
+        # update the cpu actor weight to the latest model
+        self.update_cpu_params_dict(self.weights["actor"])
 
         log_perf_data(rollout_id, self.args)
         Timer().start("train_wait")
@@ -342,8 +297,13 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("after update_weights")
 
             if getattr(self.args, "keep_old_actor", False):
-                print("update rollout model on cpu using actor model")
-                self.update_cpu_params_dict(self.weights["old_actor"])
+                print("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
+                # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
+                # First copy rollout_actor to old_actor
+                for name in self.weights["old_actor"]:
+                    self.weights["old_actor"][name].copy_(self.weights["rollout_actor"][name])
+                # Then copy current actor to rollout_actor
+                self.update_cpu_params_dict(self.weights["rollout_actor"])
 
         if self.args.offload and hasattr(mpu, "destroy_process_groups"):
             mpu.destroy_process_groups()

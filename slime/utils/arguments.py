@@ -188,16 +188,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "This is used to shuffle the prompts and also for the random sampling of the prompts."
                 ),
             )
-            parser.add_argument(
-                "--use-token-output",
-                action="store_true",
-                default=False,
-                help=(
-                    "Use token-based output from SGLang instead of string-based output. "
-                    "This avoids encode/decode overhead and directly stores tokens, "
-                    "which is more efficient for training workflows."
-                ),
-            )
 
             # sampling
             parser.add_argument(
@@ -601,6 +591,19 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         def add_wandb_arguments(parser):
             # wandb parameters
             parser.add_argument("--use-wandb", action="store_true", default=False)
+            parser.add_argument(
+                "--wandb-mode",
+                type=str,
+                default=None,
+                choices=["online", "offline", "disabled"],
+                help="W&B mode: online (default), offline (local only), or disabled. Overrides WANDB_MODE env var.",
+            )
+            parser.add_argument(
+                "--wandb-dir",
+                type=str,
+                default=None,
+                help="Directory to store wandb logs. Default is ./wandb in current directory.",
+            )
             parser.add_argument("--wandb-key", type=str, default=None)
             parser.add_argument("--wandb-host", type=str, default=None)
             parser.add_argument("--wandb-team", type=str, default=None)
@@ -741,6 +744,14 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Path to the custom reward model function. "
                     "If set, we will use this function to calculate the reward instead of the default one. "
                     "The function should have the signature `def custom_rm(args, sample) -> float`."
+                ),
+            )
+            parser.add_argument(
+                "--custom-reward-post-process-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
                 ),
             )
             return parser

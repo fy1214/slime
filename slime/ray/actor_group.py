@@ -61,7 +61,7 @@ class RayTrainGroup:
             **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         }
 
-        if not torch.version.hip:
+        if not torch.version.hip and self.args.offload:
             import torch_memory_saver
 
             dynlib_path = os.path.join(
@@ -109,8 +109,6 @@ class RayTrainGroup:
         to update weights after each training stage.
         """
         self.rollout = rollout
-        ray.get([actor.set_data_buffer.remote(rollout.data_buffer) for actor in self._actor_handlers])
-
         return [
             actor.connect_rollout_engines.remote(
                 rollout.rollout_engines,

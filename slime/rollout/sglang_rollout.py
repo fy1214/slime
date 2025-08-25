@@ -1,6 +1,5 @@
 import asyncio
 import copy
-from functools import partial
 
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -10,13 +9,10 @@ from slime.utils.data import Dataset
 from slime.utils.http_utils import get, post
 from slime.utils.misc import SingletonMeta, load_function
 from slime.utils.types import Sample
-from slime.rollout.components.sample_generator import generate_one_sample_vanilla
-from .components.base_rollout_fn import RolloutFnCallParams, RolloutFnInitParams, RolloutFnCallOutput
-from .components.partial_rollout_fn import PartialRolloutFn
 
 from .rm_hub import async_rm, batched_async_rm
 
-__all__ = ["create_rollout_fn"]
+__all__ = ["generate_rollout"]
 
 
 class GenerateState(metaclass=SingletonMeta):
@@ -66,6 +62,70 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+async def generate(args, sample: Sample, sampling_params) -> Sample:
+    state = GenerateState(args)
+
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+
+    assert (
+        sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
+    ), f"Sample status is {sample.status}"
+
+    if len(sample.response) > 0:
+        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(
+            state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        )
+
+    assert (
+        sampling_params["max_new_tokens"] >= 0
+    ), f"max_new_tokens: {sampling_params['max_new_tokens']} should not be less than 0"
+    if sampling_params["max_new_tokens"] == 0:
+        sample.status = Sample.Status.TRUNCATED
+        return sample
+
+    # Token-based mode: use tokens directly
+    if len(sample.response) > 0:
+        input_token_ids = sample.tokens
+    else:
+        # First turn: initialize with prompt tokens
+        prompt_token_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        input_token_ids = prompt_token_ids
+        # Initialize sample.tokens with prompt for subsequent turns
+        if not sample.tokens:  # Only set if empty
+            sample.tokens = prompt_token_ids
+
+    # Prepare payload - shared structure
+    payload = {
+        "input_ids": input_token_ids,
+        "sampling_params": sampling_params,
+        "return_logprob": True,
+    }
+
+    output = await post(url, payload, use_http2=args.use_http2)
+
+    # Extract new response tokens
+    if "output_token_logprobs" in output["meta_info"]:
+        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+    else:
+        # abort
+        new_response_tokens = []
+
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
+
+    match output["meta_info"]["finish_reason"]["type"]:
+        case "length":
+            sample.status = Sample.Status.TRUNCATED
+        case "abort":
+            sample.status = Sample.Status.ABORTED
+        case "stop":
+            sample.status = Sample.Status.COMPLETED
+
+    return sample
+
+
 async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluation=False) -> Sample:
     # For samples with existing response, check if they're complete
     if sample.status == Sample.Status.COMPLETED or sample.status == Sample.Status.TRUNCATED:
@@ -86,16 +146,26 @@ async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluatio
             custom_generate_func = load_function(args.custom_generate_function_path)
             sample = await custom_generate_func(args, sample, sampling_params)
         else:
-            sample = await generate_one_sample_vanilla(args, state.tokenizer, sample, sampling_params)
-
-    if sample.status == Sample.Status.ABORTED:
-        return sample
+            sample = await generate(args, sample, sampling_params)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
         return sample
 
-    sample.reward = await async_rm(args, sample)
+    # multi samples
+    if isinstance(sample, list):
+        samples = sample
+        if any([sample.status == Sample.Status.ABORTED for sample in samples]):
+            return samples
+
+        rewards = await async_rm(args, samples)
+        for sample, reward in zip(samples, rewards):
+            sample.reward = reward
+    else:
+        if sample.status == Sample.Status.ABORTED:
+            return sample
+
+        sample.reward = await async_rm(args, sample)
 
     return sample
 
@@ -157,13 +227,13 @@ async def abort(args, rollout_id: int):
     return aborted_samples
 
 
-async def generate_rollout_async(args, rollout_id: int, get_samples):
+async def generate_rollout_async(args, rollout_id: int, data_source) -> list[list[Sample]]:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
         args: the whole args
         rollout_id: int, the id of the rollout, used for deterministic data generation
-        get_samples: the data source to fetch
+        data_source: the data source to fetch
 
     Returns:
         list[list[Sample]]: a list of samples generated by the rollout, the length of the list is exactly the same as the `rollout_batch_size`
@@ -189,7 +259,7 @@ async def generate_rollout_async(args, rollout_id: int, get_samples):
     while len(data) < target_data_size:
         while state.remaining_batch_size < target_data_size:
             # get samples from the buffer and submit the generation requests.
-            samples = get_samples(args.over_sampling_batch_size)
+            samples = data_source(args.over_sampling_batch_size)
             state.submit_generate_tasks(samples)
 
         # wait for the generation to finish
@@ -232,7 +302,7 @@ async def generate_rollout_async(args, rollout_id: int, get_samples):
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    return RolloutFnCallOutput(samples=data), aborted_samples
+    return data, aborted_samples
 
 
 EVAL_PROMPT_DATASET = {}
@@ -244,7 +314,7 @@ async def eval_rollout(args, rollout_id):
     for i in range(0, len(args.eval_prompt_data), 2):
         name, path = args.eval_prompt_data[i : i + 2]
         results.update(await eval_rollout_single_dataset(args, rollout_id, name, path))
-    return RolloutFnCallOutput(metrics=results), []
+    return results, []
 
 
 async def eval_rollout_single_dataset(args, rollout_id, name, path):
@@ -329,20 +399,28 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
     }
 
 
-def _generate_one_step(
-    init_params: RolloutFnInitParams,
-    params: RolloutFnCallParams,
-    get_samples,
-):
-    if init_params.evaluation:
-        return run(eval_rollout(init_params.args, params.rollout_id))
-    else:
-        return run(generate_rollout_async(init_params.args, params.rollout_id, get_samples))
+# TODO remove this temp function
+def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
+    """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
+    Args:
+        args: the whole args
+        rollout_id: int, the id of the rollout, used for deterministic data generation
+        data_buffer: the data buffer to store the generated samples
+        evaluation: bool, whether the rollout is for evaluation or not
 
-def create_rollout_fn(params: RolloutFnInitParams):
-    assert params.args.rollout_global_dataset
-    return PartialRolloutFn(
-        params=params,
-        generate_one_step=partial(_generate_one_step, init_params=params),
+    Returns:
+        list[list[Sample]]: a list of list of samples generated by the rollout
+    """
+    completed_samples, aborted_samples = generate_abortable_samples(
+        args, rollout_id, data_buffer.get_samples, evaluation=evaluation
     )
+    data_buffer.add_samples(aborted_samples)
+    return completed_samples
+
+
+def generate_abortable_samples(args, rollout_id, data_source, evaluation=False):
+    assert args.rollout_global_dataset
+    if evaluation:
+        return run(eval_rollout(args, rollout_id))
+    return run(generate_rollout_async(args, rollout_id, data_source))
