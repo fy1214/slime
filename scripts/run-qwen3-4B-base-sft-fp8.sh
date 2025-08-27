@@ -81,10 +81,11 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   # --use-wandb
-   # --wandb-project slime-dev
-   # --wandb-group qwen3-4B-base-sft
-   # --wandb-save-dir ${SAVE_DIR}/wandb
+   --use-wandb
+   --wandb-mode offline
+   --wandb-project slime-dev
+   --wandb-group qwen3-4B-base-sft
+   --wandb-dir ${SAVE_DIR}/
    # --wandb-key ${WANDB_KEY}
 )
 

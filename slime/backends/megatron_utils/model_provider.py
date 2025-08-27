@@ -36,7 +36,7 @@ def get_model_provider_func(args):
                 max_entries=100000,
                 # record stack information for the trace events
                 # trace_alloc_record_context=True,
-                stacks='all',
+                stacks='all'
             )
 
             def oom_observer(device, alloc, device_alloc, device_free):
