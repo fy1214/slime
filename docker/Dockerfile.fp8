@@ -1,0 +1,56 @@
+ARG TransformerEngine_VERSION=latest
+FROM nvcr.io/nvidia/pytorch:${TransformerEngine_VERSION} AS TransformerEngine
+
+# we need to write this again after from
+ARG SGLANG_VERSION
+ARG MEGATRON_COMMIT=main
+
+RUN apt update
+RUN apt install -y nvtop
+
+####################
+# sglang deps
+####################
+RUN export BASE_DIR=/root/
+RUN cd $BASE_DIR
+RUN git clone https://github.com/sgl-project/sglang.git --branch v0.4.9.post2 --depth 1
+RUN cd $BASE_DIR/sglang/
+RUN pip -v install --no-deps -e "python[all]"
+RUN cd sgl-kernel
+RUN make install-deps
+
+# TODO: change to pip install sglang-router after it has a new release
+RUN pip install sglang-router --force-reinstall
+RUN pip install ray[default]
+RUN pip install httpx[http2] wandb pylatexenc blobfile accelerate "mcp[cli]"
+RUN pip install git+https://github.com/zhuzilin/cumem_allocator.git
+
+####################
+# megatron deps
+####################
+RUN pip -v install --no-build-isolation \
+  git+https://github.com/fanshiqing/grouped_gemm@v1.1.4
+# flash attn
+
+# megatron
+RUN cd /root/
+RUN git clone https://github.com/InfiXAI/Megatron-LM.git
+RUN cd Megatron-LM/
+RUN slime pip install -e .
+
+####################
+# other deps
+####################
+RUN pip install git+https://github.com/zhuzilin/cumem_allocator.git --no-build-isolation
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git --no-deps
+
+####################
+# slime
+####################
+RUN cd $BASE_DIR
+RUN git clone https://github.com/fy1214/slime.git --branch submit
+RUN cd slime/
+RUN slime pip install -e .
+# apply patch
+cd $BASE_DIR/sglang
+git apply /root/slime/docker/patch/sglang.patch
