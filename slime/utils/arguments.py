@@ -811,6 +811,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--activation-func-fp8-input-store",
+                action="store_true",
+                default=False,
+            )
             return parser
 
         # Add custom arguments in front to prevent overwritten some slime arguments.

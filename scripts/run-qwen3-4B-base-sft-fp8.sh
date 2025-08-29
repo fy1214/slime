@@ -55,7 +55,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 2
+   --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -106,9 +106,11 @@ PERCISE_ARGS=(
    --fp8-format e4m3
    --fp8-recipe blockwise
    --fp8-param-gather
-   --cache-quantized-input
-   --overlap-grad-reduce
-   --overlap-param-gather
+   #--fp8-recipe mxfp8
+   #--reuse-grad-buf-for-mxfp8-param-ag
+   #--activation-func-fp8-input-store
+   #--overlap-grad-reduce
+   #--overlap-param-gather
 )
 
 TENSORBOARD_ARGS=(
@@ -153,5 +155,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
+   ${PERCISE_ARGS[@]} \
    ${TENSORBOARD_ARGS[@]} \
    ${MISC_ARGS[@]}
