@@ -7,7 +7,7 @@
 
 ## Environment Preparation
 
-First, we need to create a mirror environment by [fp8 Dockerfile](../../docker/Dockerfile.fp8).
+First, we need to create a mirror environment by [FP8 Dockerfile](../../docker/Dockerfile.fp8).
 
 Next we need to convert the `Qwen3-4B-Base` model by following the [Example: Qwen3-4B Model](./models/qwen3-4B.md).
 

@@ -7,7 +7,7 @@
 
 ## 环境准备
 
-首先需要按照[fp8镜像](../../docker/Dockerfile.fp8)创建镜像环境。
+首先需要按照[FP8 Dockerfile](../../docker/Dockerfile.fp8)创建镜像环境。
 
 然后我们仿照 [示例：Qwen3-4B 模型](./models/qwen3-4B.md) 转换 `Qwen3-4B-Base` 模型。
 

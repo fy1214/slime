@@ -67,6 +67,9 @@ RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git
 RUN pip install uninstall triton
 RUN pip install triton==3.3.0
 
+####################
+# deps from sgl-kernel
+####################
 RUN pip install blobfile==3.0.0
 RUN pip install build
 RUN pip install compressed-tensors
