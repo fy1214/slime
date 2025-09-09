@@ -17,6 +17,7 @@ from slime.utils.distributed_utils import get_gloo_group
 from slime.utils.memory_utils import clear_memory, print_memory
 from slime.utils.timer import Timer, timer
 from slime.utils.wandb_utils import init_wandb_secondary
+from slime.backends.megatron_utils.fp8 import is_float8tensor, get_fp8_weight_and_scale
 
 from ..utils.data import get_data_iterator, process_rollout_data
 from .checkpoint import load_checkpoint
@@ -113,15 +114,23 @@ class MegatronTrainRayActor(TrainRayActor):
     @torch.no_grad()
     def update_cpu_params_dict(self, params_dict):
         for name, param in named_parameters(self.args, self.model):
+            # name: module.module.decoder.layers.35.mlp.linear_fc2.weight
             if name not in params_dict:
                 params_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
+
             params_dict[name].copy_(param.detach(), non_blocking=True)
+
+            if self.args.direct_update_fp8_weight and is_float8tensor(param):
+                weight, scale = get_fp8_weight_and_scale(param)
+                params_dict[name + ".fp8_weight"] = weight
+                params_dict[name + ".fp8_scale"] = scale
+
         torch.cuda.synchronize()
 
     @torch.no_grad()
     def update_gpu_params_dict(self, params_dict):
         for name, param in named_parameters(self.args, self.model):
-            assert name in params_dict
+            assert name in params_dict and not is_float8tensor(param)
             param.copy_(params_dict[name], non_blocking=True)
         torch.cuda.synchronize()
 
@@ -233,7 +242,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     )
                 )
                 # when there is old actor, we need to update the model params to actor manually
-                if "old_actor" in self.weights:
+                if "old_actor" in self.weights and not self.args.debug_train_only:
                     self.update_gpu_params_dict(self.weights["actor"])
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
@@ -285,7 +294,8 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
         # update the cpu actor weight to the latest model
-        self.update_cpu_params_dict(self.weights["actor"])
+        if not self.args.debug_train_only:
+            self.update_cpu_params_dict(self.weights["actor"])
 
         log_perf_data(rollout_id, self.args)
         Timer().start("train_wait")

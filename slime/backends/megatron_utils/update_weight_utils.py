@@ -14,8 +14,9 @@ from tqdm import tqdm
 
 from slime.utils.distributed_utils import get_gloo_group, init_process_group
 from slime.utils.types import ParamInfo
+from slime.backends.megatron_utils.fp8 import is_float8tensor, get_fp8_weight_and_scale
 
-from .megatron_to_hf import convert_to_hf  # noqa: F401
+from .megatron_to_hf import convert_to_hf, convert_to_hf_batch  # noqa: F401
 
 try:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket
@@ -209,19 +210,56 @@ def get_param_infos(args, model) -> list[ParamInfo]:
     param_infos = {}
     rank = dist.get_rank()
     for name, param in named_parameters(args, model):
-        param_infos[name] = ParamInfo(
-            name=name,
-            dtype=param.dtype,
-            shape=param.shape,
-            attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
-            },
-            size=param.numel() * param.element_size(),
-            src_rank=rank,
-        )
+        # check for fp8 weight. If true, we save two tensor for weight and scale
+        if args.direct_update_fp8_weight and is_float8tensor(param):
+            fp8_param_name = name + ".fp8_weight"
+            fp8_scale_name = name + ".fp8_scale"
+            # same name as params_dict
+            fp8_param, fp8_scale = get_fp8_weight_and_scale(param)
+
+            # for param
+            param_infos[fp8_param_name] = ParamInfo(
+                name=fp8_param_name,
+                dtype=fp8_param.dtype,      # uint8
+                shape=fp8_param.shape,
+                attrs={
+                    "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
+                    "partition_dim": getattr(param, "partition_dim", -1),
+                    "partition_stride": getattr(param, "partition_stride", 1),
+                    "parallel_mode": getattr(param, "parallel_mode", None),
+                },
+                size=fp8_param.numel() * fp8_param.element_size(),
+                src_rank=rank,
+            )
+            # for scale
+            param_infos[fp8_scale_name] = ParamInfo(
+                name=fp8_scale_name,
+                dtype=fp8_scale.dtype,  # float32
+                shape=fp8_scale.shape,
+                attrs={
+                    "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
+                    "partition_dim": getattr(param, "partition_dim", -1),
+                    "partition_stride": getattr(param, "partition_stride", 1),
+                    "parallel_mode": getattr(param, "parallel_mode", None),
+                },
+                size=fp8_scale.numel() * fp8_scale.element_size(),
+                src_rank=rank,
+            )
+
+        else:
+            param_infos[name] = ParamInfo(
+                name=name,
+                dtype=param.dtype,
+                shape=param.shape,
+                attrs={
+                    "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
+                    "partition_dim": getattr(param, "partition_dim", -1),
+                    "partition_stride": getattr(param, "partition_stride", 1),
+                    "parallel_mode": getattr(param, "parallel_mode", None),
+                },
+                size=param.numel() * param.element_size(),
+                src_rank=rank,
+            )
 
     if pp_size > 1:
         param_infos_list = [None] * pp_size
@@ -391,12 +429,15 @@ class UpdateWeightFromTensor:
         gathered_params = all_gather_params_async(list(zip(param_infos, params)))
 
         # Process gathered params
-        converted_named_tensors = []
-        for info, param in zip(param_infos, gathered_params):
-            param = remove_padding(info.name, param, self.vocab_size)
-            converted_named_tensors.extend(
-                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
-            )
+        if self.args.direct_update_fp8_weight:
+            converted_named_tensors = convert_to_hf_batch(self.args, self.model_name, param_infos, gathered_params)
+        else:
+            converted_named_tensors = []
+            for info, param in zip(param_infos, gathered_params):
+                param = remove_padding(info.name, param, self.vocab_size)
+                converted_named_tensors.extend(
+                    convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
+                )
         self._update_converted_params_from_tensor(converted_named_tensors)
 
     def _update_converted_params_from_tensor(self, converted_named_tensors):

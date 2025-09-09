@@ -9,7 +9,7 @@ from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .llama import convert_llama_to_hf
 from .mimo import convert_mimo_to_hf
-from .qwen2 import convert_qwen2_to_hf
+from .qwen2 import convert_qwen2_to_hf, convert_qwen2_to_hf_fp8
 from .qwen3moe import convert_qwen3moe_to_hf
 
 
@@ -115,7 +115,10 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     elif "qwen3moe" in model_name:
         converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:
-        converted_named_tensors = convert_qwen2_to_hf(args, name, param)
+        if args.direct_update_fp8_weight:
+            return convert_qwen2_to_hf_fp8(args, name, param)
+        else:
+            converted_named_tensors = convert_qwen2_to_hf(args, name, param)
     elif "deepseekv3" in model_name:
         converted_named_tensors = convert_deepseekv3_to_hf(args, name, param)
         # to compatible with sglang implementation
@@ -157,3 +160,32 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
         return converted_named_tensors
 
     return quantize_params(args, name, converted_named_tensors, quantization_config)
+
+
+def convert_to_hf_batch(args, model_name, param_infos, gathered_params):
+    converted_named_tensors = []
+    fp8_param_dict = {}
+    for info, param in zip(param_infos, gathered_params):
+        name = info.name
+        converted_named_tensor = convert_to_hf(args, model_name, name, param, None)
+        if 'fp8' in name:
+            fp8_param_dict['name'] = converted_named_tensor
+        else:
+            converted_named_tensors.append(converted_named_tensor)
+
+    # deal with fp8 weight and scale
+    pattern = r'^(.*?)\.(?:fp8_weight|fp8_scale|fp8)(?:\..*)?$'
+    for k1, v1 in fp8_param_dict.items():
+        if not k1.endswith('.fp8_weight'):
+            continue
+        p = re.match(pattern, k1).groups(1)
+        for k2, v2 in fp8_param_dict.items():
+            if not k2.endswith('.fp8_scale') and p not in k2:
+                continue
+            weight_and_scales = []
+            for i in range(len(v1)):
+                # [(name, qweight), (scale_name, scale)]
+                weight_and_scales.append([v1[i], v2[i]])
+            converted_named_tensors.append(weight_and_scales)
+
+    return converted_named_tensors
