@@ -162,10 +162,17 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     return quantize_params(args, name, converted_named_tensors, quantization_config)
 
 
-def convert_to_hf_batch(args, model_name, param_infos, gathered_params):
+def remove_padding(name, param, vocab_size):
+    if name == "module.module.embedding.word_embeddings.weight" or name == "module.module.output_layer.weight":
+        return param[:vocab_size]
+    return param
+
+
+def convert_to_hf_batch(args, model_name, param_infos, gathered_params, vocab_size):
     converted_named_tensors = []
     fp8_param_dict = {}
     for info, param in zip(param_infos, gathered_params):
+        param = remove_padding(info.name, param, vocab_size)
         name = info.name
         converted_named_tensor = convert_to_hf(args, model_name, name, param, None)
         if 'fp8' in name:
@@ -186,6 +193,6 @@ def convert_to_hf_batch(args, model_name, param_infos, gathered_params):
             for i in range(len(v1)):
                 # [(name, qweight), (scale_name, scale)]
                 weight_and_scales.append([v1[i], v2[i]])
-            converted_named_tensors.append(weight_and_scales)
+            converted_named_tensors.extend(weight_and_scales)
 
     return converted_named_tensors

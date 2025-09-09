@@ -430,7 +430,7 @@ class UpdateWeightFromTensor:
 
         # Process gathered params
         if self.args.direct_update_fp8_weight:
-            converted_named_tensors = convert_to_hf_batch(self.args, self.model_name, param_infos, gathered_params)
+            converted_named_tensors = convert_to_hf_batch(self.args, self.model_name, param_infos, gathered_params, self.vocab_size)
         else:
             converted_named_tensors = []
             for info, param in zip(param_infos, gathered_params):
