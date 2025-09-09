@@ -24,20 +24,21 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/slime/scripts/models/qwen3-4B.sh"
+source "${SCRIPT_DIR}/models/qwen3-4B.sh"
+
+SAVE_DIR=/root/exp
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen/Qwen3-4B-Instruct-2507/
-   --ref-load /root/Qwen/Qwen3-4B-Instruct-2507_torch_dist
-#    --load ./models/Qwen/Qwen3-4B-Instruct_slime/
-   --save /root/Qwen/Qwen3-4B-Instruct-2507_sft_slime/
+   --hf-checkpoint /root/Qwen3-4B/
+   --ref-load /root/Qwen3-4B-Base_torch_dist
+   --load /root/Qwen3-4B-Base_slime/
+   --save /root/Qwen3-4B-Base_slime/
    --save-interval 1000
-   --rotary-base 5000000
 )
 
 SFT_ARGS=(
    --rollout-function-path slime.rollout.sft_rollout.generate_rollout
-   --prompt-data ./data/retool/ReTool-SFT.parquet
+   --prompt-data /root/openhermes2_5.parquet
    --input-key messages
    --rollout-shuffle
    --num-epoch 3
@@ -51,7 +52,7 @@ SFT_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -64,7 +65,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 32768
 )
 
 OPTIMIZER_ARGS=(
@@ -81,9 +82,11 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
+   --wandb-mode offline
    --wandb-project slime-dev
    --wandb-group qwen3-4B-base-sft
-   --wandb-key ${WANDB_KEY}
+   --wandb-dir ${SAVE_DIR}/
+   # --wandb-key ${WANDB_KEY}
 )
 
 MISC_ARGS=(
@@ -97,6 +100,27 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
+PERCISE_ARGS=(
+   --transformer-impl transformer_engine
+   --bf16
+   --fp8-format e4m3
+   --fp8-recipe blockwise
+   --fp8-param-gather
+   #--fp8-recipe mxfp8
+   #--reuse-grad-buf-for-mxfp8-param-ag
+   #--activation-func-fp8-input-store
+   #--overlap-grad-reduce
+   #--overlap-param-gather
+)
+
+TENSORBOARD_ARGS=(
+   --use-pytorch-profiler
+   --profile-step-start 10
+   --profile-step-end 12
+   --tensorboard-dir ${SAVE_DIR}/tensorboard
+   --record-memory-history
+)
+
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
@@ -108,7 +132,13 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
+    \"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD\": \"1\",
+    \"TORCH_NCCL_AVOID_RECORD_STREAMS\": \"1\",
+    \"NVTE_ALLOW_NONDETERMINISTIC_ALGO\": \"1\",
+    \"NCCL_NVLS_ENABLE\": \"0\",
+    \"NVTE_DEBUG\": \"0\"
   }
 }"
 
@@ -125,4 +155,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
+   ${PERCISE_ARGS[@]} \
+   ${TENSORBOARD_ARGS[@]} \
    ${MISC_ARGS[@]}
