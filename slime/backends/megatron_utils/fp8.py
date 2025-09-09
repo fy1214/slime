@@ -1,6 +1,17 @@
 import math
-
 import torch
+
+from megatron.core.utils import get_te_version, is_te_min_version
+
+# Check if Transformer Engine is installed
+HAVE_TE = False
+try:
+    import transformer_engine  # pylint: disable=W0611
+
+    HAVE_TE = True
+except (ImportError, ModuleNotFoundError):
+    # Transformer Engine not found
+    pass
 
 # Check if Transformer Engine has MXFP8Tensor class
 

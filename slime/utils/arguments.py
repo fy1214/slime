@@ -288,6 +288,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "It may be helpful for updating loss mask."
                 ),
             )
+            parser.add_argument(
+                "--direct-update-fp8-weight",
+                action="store_true",
+                default=False,
+            )
             return parser
 
         # data
@@ -824,6 +829,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--custom-megatron-before-train-step-hook-path",
                 type=str,
                 default=None,
+            )
+            parser.add_argument(
+                "--activation-func-fp8-input-store",
+                action="store_true",
+                default=False,
             )
             return parser
 
