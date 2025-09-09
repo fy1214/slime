@@ -63,4 +63,4 @@ def get_fp8_weight_and_scale(tensor: torch.Tensor):
     scale_m, scale_n = math.ceil(m / block_size), math.ceil(n / block_size)
     scale = fp8_metadata_dict['rowwise_scale_inv']
 
-    return weight, scale[:scale_m, :scale_n]
+    return weight.clone(), scale[:scale_m, :scale_n].contiguous()

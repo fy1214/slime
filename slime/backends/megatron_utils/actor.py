@@ -121,16 +121,23 @@ class MegatronTrainRayActor(TrainRayActor):
             params_dict[name].copy_(param.detach(), non_blocking=True)
 
             if self.args.direct_update_fp8_weight and is_float8tensor(param):
+                weight_name = name + ".fp8_weight"
+                scale_name = name + ".fp8_scale"
                 weight, scale = get_fp8_weight_and_scale(param)
-                params_dict[name + ".fp8_weight"] = weight
-                params_dict[name + ".fp8_scale"] = scale
+                if weight_name not in params_dict:
+                    params_dict[weight_name] = torch.empty_like(weight, device=torch.device("cpu"), pin_memory=True)
+                if scale_name not in params_dict:
+                    params_dict[scale_name] = torch.empty_like(scale, device=torch.device("cpu"), pin_memory=True)
+
+                params_dict[weight_name].copy_(weight.detach(), non_blocking=True)
+                params_dict[scale_name].copy_(scale.detach(), non_blocking=True)
 
         torch.cuda.synchronize()
 
     @torch.no_grad()
     def update_gpu_params_dict(self, params_dict):
         for name, param in named_parameters(self.args, self.model):
-            assert name in params_dict and not is_float8tensor(param)
+            assert name in params_dict
             param.copy_(params_dict[name], non_blocking=True)
         torch.cuda.synchronize()
 
