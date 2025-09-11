@@ -441,7 +441,7 @@ class UpdateWeightFromTensor:
         self._update_converted_params_from_tensor(converted_named_tensors)
 
     def _update_converted_params_from_tensor(self, converted_named_tensors):
-        if use_flattened_tensor_bucket and self.quantization_config is None:
+        if use_flattened_tensor_bucket and self.quantization_config is None and not self.args.direct_update_fp8_weight:
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=converted_named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
 
@@ -467,7 +467,7 @@ class UpdateWeightFromTensor:
             kwargs = {
                 "serialized_named_tensors": serialized_named_tensors,
             }
-            if use_flattened_tensor_bucket and self.quantization_config is None:
+            if use_flattened_tensor_bucket and self.quantization_config is None and not self.args.direct_update_fp8_weight:
                 kwargs["load_format"] = "flattened_bucket"
 
             ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)

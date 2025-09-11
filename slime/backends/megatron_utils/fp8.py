@@ -7,7 +7,6 @@ from megatron.core.utils import get_te_version, is_te_min_version
 HAVE_TE = False
 try:
     import transformer_engine  # pylint: disable=W0611
-
     HAVE_TE = True
 except (ImportError, ModuleNotFoundError):
     # Transformer Engine not found
@@ -26,6 +25,7 @@ except (ImportError, ModuleNotFoundError):
 # Check if Transformer Engine has class for fp8 tensors.
 HAVE_TE_FP8_TENSOR_CLASS = False
 if HAVE_TE:
+    from transformer_engine.pytorch.constants import TE_DType_To_Torch
     if is_te_min_version("2.0"):
         # In TE2.x, QuantizedTensor is the base class for all different type of fp8 tensors,
         # including fp8 tensor for delayed scaling, current scaling and mxfp8, etc.
@@ -37,6 +37,16 @@ if HAVE_TE:
 else:
     HAVE_TE_FP8_TENSOR_CLASS = False
     FP8_TENSOR_CLASS = None
+
+default_quantization_config = {
+    "activation_scheme": "dynamic",
+    "fmt": "e4m3",
+    "quant_method": "fp8",
+    "weight_block_size": [
+      128,
+      128
+    ]
+}
 
 def is_float8tensor(tensor: torch.Tensor) -> bool:
     """Check if a tensor is a Transformer Engine Float8Tensor.
@@ -55,7 +65,8 @@ def is_mxfp8tensor(tensor: torch.Tensor) -> bool:
 
 def get_fp8_weight_and_scale(tensor: torch.Tensor):
     fp8_metadata_dict = tensor.get_metadata()
-    weight = fp8_metadata_dict['rowwise_data']
+    # te float8Tensor trick
+    weight = fp8_metadata_dict['rowwise_data'].view(TE_DType_To_Torch[tensor._fp8_dtype])
     m, n = weight.shape
 
     # TE scale_shape will be round to multiple 4, need to reshape
@@ -63,4 +74,4 @@ def get_fp8_weight_and_scale(tensor: torch.Tensor):
     scale_m, scale_n = math.ceil(m / block_size), math.ceil(n / block_size)
     scale = fp8_metadata_dict['rowwise_scale_inv']
 
-    return weight.clone(), scale[:scale_m, :scale_n].contiguous()
+    return weight, scale[:scale_m, :scale_n].contiguous()

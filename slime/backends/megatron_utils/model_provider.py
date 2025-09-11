@@ -1,5 +1,6 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
 import inspect
+import time
 from contextlib import nullcontext
 from typing import Optional
 
@@ -48,7 +49,7 @@ def get_model_provider_func(args):
 
                 dump(
                     snapshot,
-                    open(f"oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}", "wb"),
+                    open(f"oom_rank-{torch.distributed.get_rank()}_{time.time()}", "wb"),
                 )
 
             torch._C._cuda_attach_out_of_memory_observer(oom_observer)

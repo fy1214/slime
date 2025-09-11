@@ -141,8 +141,8 @@ def convert_qwen2_to_hf_fp8(args, name, param):
         elif rest == "mlp.linear_fc1.weight.fp8_scale":
             gate_weight_scale, up_weight_scale = param.chunk(2, dim=0)
             return [
-                (f"model.layers.{layer_idx}.mlp.gate_proj.weight", gate_weight_scale),
-                (f"model.layers.{layer_idx}.mlp.up_proj.weight", up_weight_scale),
+                (f"model.layers.{layer_idx}.mlp.gate_proj.weight_scale_inv", gate_weight_scale),
+                (f"model.layers.{layer_idx}.mlp.up_proj.weight_scale_inv", up_weight_scale),
             ]
         elif rest == "mlp.linear_fc2.weight.fp8_weight":
             return [(f"model.layers.{layer_idx}.mlp.down_proj.weight", param)]

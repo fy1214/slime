@@ -176,23 +176,26 @@ def convert_to_hf_batch(args, model_name, param_infos, gathered_params, vocab_si
         name = info.name
         converted_named_tensor = convert_to_hf(args, model_name, name, param, None)
         if 'fp8' in name:
-            fp8_param_dict['name'] = converted_named_tensor
+            fp8_param_dict[name] = converted_named_tensor
         else:
-            converted_named_tensors.append(converted_named_tensor)
+            converted_named_tensors.extend(converted_named_tensor)
 
     # deal with fp8 weight and scale
     pattern = r'^(.*?)\.(?:fp8_weight|fp8_scale|fp8)(?:\..*)?$'
     for k1, v1 in fp8_param_dict.items():
         if not k1.endswith('.fp8_weight'):
             continue
-        p = re.match(pattern, k1).groups(1)
+        if torch.distributed.get_rank() == 0:
+            print(k1)
+        'module.module.decoder.layers.0.mlp.linear_fc1.weight.fp8_weight'
+        p = re.match(pattern, k1).groups(1)[0]
         for k2, v2 in fp8_param_dict.items():
-            if not k2.endswith('.fp8_scale') and p not in k2:
+            if not k2.endswith('.fp8_scale') or p not in k2:
                 continue
             weight_and_scales = []
             for i in range(len(v1)):
                 # [(name, qweight), (scale_name, scale)]
-                weight_and_scales.append([v1[i], v2[i]])
+                weight_and_scales.extend([v1[i], v2[i]])
             converted_named_tensors.extend(weight_and_scales)
 
     return converted_named_tensors
