@@ -185,9 +185,6 @@ def convert_to_hf_batch(args, model_name, param_infos, gathered_params, vocab_si
     for k1, v1 in fp8_param_dict.items():
         if not k1.endswith('.fp8_weight'):
             continue
-        if torch.distributed.get_rank() == 0:
-            print(k1)
-        'module.module.decoder.layers.0.mlp.linear_fc1.weight.fp8_weight'
         p = re.match(pattern, k1).groups(1)[0]
         for k2, v2 in fp8_param_dict.items():
             if not k2.endswith('.fp8_scale') or p not in k2:
