@@ -57,6 +57,24 @@ class TrainRayActor(RayActor):
         args.local_rank = args.rank % torch.cuda.device_count()
         torch.cuda.set_device(f"cuda:{args.local_rank}")
 
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+
+            local_rank = int(os.environ["RANK"]) % args.num_gpus_per_node
+
+            handle = pynvml.nvmlDeviceGetHandleByIndex(local_rank)
+            pynvml.nvmlDeviceSetCpuAffinity(handle)
+
+            print(f"Set NUMA affinity for GPU {local_rank}")
+            pynvml.nvmlShutdown()
+
+        except ImportError:
+            print(f"Warning: pynvml not available, skipping NUMA affinity setup")
+        except Exception as e:
+            print(f"Warning: Failed to set NUMA affinity: {e}")
+
     @abc.abstractmethod
     def sleep(self, tags):
         raise NotImplementedError
@@ -71,10 +89,6 @@ class TrainRayActor(RayActor):
 
     @abc.abstractmethod
     def train(self, rollout_id, rollout_data_ref):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def eval(self, rollout_id, rollout_data_ref):
         raise NotImplementedError
 
     @abc.abstractmethod
