@@ -14,6 +14,8 @@ def read_file(path):
         df = pd.read_json(path, lines=True)
     elif path.endswith(".parquet"):
         df = pd.read_parquet(path, dtype_backend="pyarrow")
+    elif path.endswith(".json"):
+        df = pd.read_json(path)
     else:
         raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
     for _, row in df.iterrows():
