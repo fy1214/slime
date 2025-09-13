@@ -76,10 +76,12 @@ def compute_policy_loss(
 
 def compute_log_probs(logits: torch.Tensor, tokens: torch.Tensor, process_group: Optional[dist.ProcessGroup]):
     from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+    from megatron.core.extensions.transformer_engine import te_parallel_cross_entropy
 
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
+    return -te_parallel_cross_entropy(logits, tokens, process_group)
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
 
 
