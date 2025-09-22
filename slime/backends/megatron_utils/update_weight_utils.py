@@ -16,7 +16,7 @@ from slime.utils.distributed_utils import get_gloo_group, init_process_group
 from slime.utils.types import ParamInfo
 from slime.backends.megatron_utils.fp8 import is_float8tensor, get_fp8_weight_and_scale
 
-from .megatron_to_hf import convert_to_hf, convert_to_hf_batch  # noqa: F401
+from .megatron_to_hf import convert_to_hf  # noqa: F401
 
 try:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket
@@ -429,15 +429,12 @@ class UpdateWeightFromTensor:
         gathered_params = all_gather_params_async(list(zip(param_infos, params)))
 
         # Process gathered params
-        if self.args.direct_update_fp8_weight:
-            converted_named_tensors = convert_to_hf_batch(self.args, self.model_name, param_infos, gathered_params, self.vocab_size)
-        else:
-            converted_named_tensors = []
-            for info, param in zip(param_infos, gathered_params):
-                param = remove_padding(info.name, param, self.vocab_size)
-                converted_named_tensors.extend(
-                    convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
-                )
+        converted_named_tensors = []
+        for info, param in zip(param_infos, gathered_params):
+            param = remove_padding(info.name, param, self.vocab_size)
+            converted_named_tensors.extend(
+                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
+            )
         self._update_converted_params_from_tensor(converted_named_tensors)
 
     def _update_converted_params_from_tensor(self, converted_named_tensors):

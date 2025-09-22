@@ -160,39 +160,3 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
         return converted_named_tensors
 
     return quantize_params(args, name, converted_named_tensors, quantization_config)
-
-
-def remove_padding(name, param, vocab_size):
-    if name == "module.module.embedding.word_embeddings.weight" or name == "module.module.output_layer.weight":
-        return param[:vocab_size]
-    return param
-
-
-def convert_to_hf_batch(args, model_name, param_infos, gathered_params, vocab_size):
-    converted_named_tensors = []
-    fp8_param_dict = {}
-    for info, param in zip(param_infos, gathered_params):
-        param = remove_padding(info.name, param, vocab_size)
-        name = info.name
-        converted_named_tensor = convert_to_hf(args, model_name, name, param, None)
-        if 'fp8' in name:
-            fp8_param_dict[name] = converted_named_tensor
-        else:
-            converted_named_tensors.extend(converted_named_tensor)
-
-    # deal with fp8 weight and scale
-    pattern = r'^(.*?)\.(?:fp8_weight|fp8_scale|fp8)(?:\..*)?$'
-    for k1, v1 in fp8_param_dict.items():
-        if not k1.endswith('.fp8_weight'):
-            continue
-        p = re.match(pattern, k1).groups(1)[0]
-        for k2, v2 in fp8_param_dict.items():
-            if not k2.endswith('.fp8_scale') or p not in k2:
-                continue
-            weight_and_scales = []
-            for i in range(len(v1)):
-                # [(name, qweight), (scale_name, scale)]
-                weight_and_scales.extend([v1[i], v2[i]])
-            converted_named_tensors.extend(weight_and_scales)
-
-    return converted_named_tensors
