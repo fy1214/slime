@@ -573,6 +573,26 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--gamma", type=float, default=1.0, help="Discount factor for rewards in REINFORCE++.")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
+                "--high-entropy-token-filter",
+                action="store_true",
+                default=False,
+                help=(
+                    "Whether to apply policy gradient updates only to high-entropy tokens. "
+                    "Inspired by 'Beyond the 80/20 Rule: High-Entropy Minority Tokens Drive Effective RL for LLM Reasoning'. "
+                    "This focuses training on 'forking tokens' that steer reasoning directions."
+                ),
+            )
+            parser.add_argument(
+                "--entropy-percentile",
+                type=float,
+                default=0.2,
+                help=(
+                    "The percentile of highest-entropy tokens to retain for gradient updates when --high-entropy-token-filter is enabled. "
+                    "Default 0.2 means only the top 20%% highest-entropy tokens will receive gradients. "
+                    "According to the paper, 20%% achieves optimal balance between exploration and performance."
+                ),
+            )
+            parser.add_argument(
                 "--disable-grpo-std-normalization",
                 action="store_false",
                 dest="grpo_std_normalization",
@@ -780,6 +800,32 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
                 ),
+            )
+            # Response length penalty arguments
+            parser.add_argument(
+                "--enable-length-penalty",
+                action="store_true",
+                default=False,
+                help="Enable response length truncation penalty (similar to verl DAPO)",
+            )
+            parser.add_argument(
+                "--max-response-length",
+                type=int,
+                default=None,
+                help="Maximum allowed response length before applying penalty",
+            )
+            parser.add_argument(
+                "--length-penalty-buffer",
+                type=int,
+                default=50,
+                help="Buffer length for gradual penalty application",
+            )
+            parser.add_argument(
+                "--length-penalty-factor",
+                type=float,
+                default=1.0,
+                help="Penalty factor for response length truncation (higher = more penalty)",
+
             )
             return parser
 
