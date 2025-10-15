@@ -121,6 +121,15 @@ class RolloutController:
         assert len(raw_rewards) == len(samples)
         assert len(rewards) == len(samples)
 
+        dataset_indices: list[int | None] = []
+        for sample in samples:
+            idx = None
+            if sample.metadata and isinstance(sample.metadata, dict):
+                value = sample.metadata.get("dataset_index")
+                if isinstance(value, int):
+                    idx = value
+            dataset_indices.append(idx)
+
         train_data = {
             "tokens": [sample.tokens for sample in samples],
             "response_lengths": [sample.response_length for sample in samples],
@@ -129,7 +138,9 @@ class RolloutController:
             "rewards": rewards,
             "raw_reward": raw_rewards,
             "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
-            "sample_indices": [sample.index for sample in samples],
+            "sample_indices": [
+                dataset_indices[i] if dataset_indices[i] is not None else samples[i].index for i in range(len(samples))
+            ],
         }
 
         # loss mask
