@@ -476,7 +476,7 @@ def policy_loss_function(args, batch, logits, sum_of_sample_mean):
         tis = torch.exp(old_log_probs - rollout_log_probs)
         ois = (-ppo_kl).exp()
         tis_clip = torch.clamp(tis, min=args.tis_clip_low, max=args.tis_clip)
-        tis_clipfrac = tis_clip != tis
+        tis_clipfrac = (tis_clip != tis).float()
 
         pg_loss = pg_loss * tis_clip
 
