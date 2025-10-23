@@ -1,11 +1,13 @@
 accelerate
 datasets
+deepspeed
 httpx[http2]
 mcp[cli]
+pillow
 pylatexenc
 pyyaml
 ray[default]
-sglang
+tensorboard
 torch
 transformers
 wandb

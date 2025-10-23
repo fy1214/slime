@@ -1,12 +1,21 @@
 import asyncio
+import base64
 import copy
+import io
+from argparse import Namespace
+from collections import defaultdict
+from typing import Any, Callable, Optional, Union
 
+from PIL import Image
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from slime.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
+from slime.rollout.filter_hub.base_types import DynamicFilterOutput
 from slime.utils.async_utils import run
 from slime.utils.data import Dataset
 from slime.utils.http_utils import get, post
+from slime.utils.mask_utils import get_response_lengths
 from slime.utils.misc import SingletonMeta, load_function
 from slime.utils.types import Sample
 
@@ -15,19 +24,29 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout"]
 
 
+def _load_and_encode_image(path: str) -> str:
+    """Load an image from path, ensure RGB, encode as JPEG base64 string."""
+    with Image.open(path) as image:
+        buffer = io.BytesIO()
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(buffer, format="JPEG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
 class GenerateState(metaclass=SingletonMeta):
     """
     The global state for the generation process.
     """
 
-    def __init__(self, args):
+    def __init__(self, args: Namespace) -> None:
         # persistant state for the generation process
         self.args = args
         self.tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
         self.semaphore = asyncio.Semaphore(
             args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
         )
-        self.sampling_params = dict(
+        self.sampling_params: dict[str, Any] = dict(
             temperature=args.rollout_temperature,
             top_p=args.rollout_top_p,
             top_k=args.rollout_top_k,
@@ -39,14 +58,18 @@ class GenerateState(metaclass=SingletonMeta):
             spaces_between_special_tokens=False,
         )
 
+        if getattr(args, "sglang_enable_deterministic_inference", False):
+            sampling_seed_base = args.rollout_seed
+            self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
+
         self.reset()
 
-    def reset(self):
+    def reset(self) -> None:
         self.remaining_batch_size = 0
         self.pendings = set()
         self.aborted = False
 
-    def submit_generate_tasks(self, samples: list[list[Sample]]):
+    def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
             self.pendings.add(
                 asyncio.create_task(
@@ -62,19 +85,40 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
-async def generate(args, sample: Sample, sampling_params) -> Sample:
+async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
+    """Generate using traditional SGLang router with token-based workflow"""
     state = GenerateState(args)
-
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     assert (
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
+    # Process prompt to create text and image payload
+    image_data = []
+    if isinstance(sample.prompt, str):
+        text_prompt = sample.prompt
+    else:  # Multimodal prompt (list of dicts)
+        text_prompt = ""
+        # sglang uses a placeholder to insert image features
+        image_token = state.tokenizer.special_tokens_map.get("image_token", "<image>")
+        for part in sample.prompt:
+            if part["type"] == "text":
+                text_prompt += part["text"]
+            elif part["type"] == "image":
+                text_prompt += image_token
+                try:
+                    img_b64 = await asyncio.to_thread(_load_and_encode_image, part["path"])
+                    image_data.append(img_b64)
+                except Exception as e:
+                    print(f"Error processing image {part['path']}: {e}")
+                    sample.status = Sample.Status.ABORTED
+                    return sample
+
     if len(sample.response) > 0:
-        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(
-            state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
-        )
+        # Adjust max_new_tokens for subsequent generation turns
+        prompt_len = len(state.tokenizer(text_prompt, add_special_tokens=False)["input_ids"])
+        sampling_params["max_new_tokens"] -= len(sample.tokens) - prompt_len
 
     assert (
         sampling_params["max_new_tokens"] >= 0
@@ -83,44 +127,56 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         sample.status = Sample.Status.TRUNCATED
         return sample
 
-    # Token-based mode: use tokens directly
-    if len(sample.response) > 0:
-        input_token_ids = sample.tokens
-    else:
-        # First turn: initialize with prompt tokens
-        prompt_token_ids = state.tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
-        input_token_ids = prompt_token_ids
-        # Initialize sample.tokens with prompt for subsequent turns
-        if not sample.tokens:  # Only set if empty
-            sample.tokens = prompt_token_ids
-
-    # Prepare payload - shared structure
+    # Prepare payload for sglang server
     payload = {
-        "input_ids": input_token_ids,
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    if image_data:
+        payload["image_data"] = image_data
 
-    output = await post(url, payload, use_http2=args.use_http2)
+    # Use existing tokens for multi-turn or tokenize the new prompt
+    if len(sample.response) > 0:
+        payload["input_ids"] = sample.tokens
+    else:
+        prompt_token_ids = state.tokenizer(text_prompt, add_special_tokens=False)["input_ids"]
+        payload["input_ids"] = prompt_token_ids
+        if not sample.tokens:  # Initialize sample.tokens for the first turn
+            sample.tokens = prompt_token_ids
+
+    output = await post(url, payload)
 
     # Extract new response tokens
-    if "output_token_logprobs" in output["meta_info"]:
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-    else:
-        # abort
-        new_response_tokens = []
-        new_response_log_probs = []
 
-    # Update sample with tokens directly - avoiding re-tokenization
-    sample.tokens = sample.tokens + new_response_tokens
-    sample.response_length += len(new_response_tokens)
-    sample.response += output["text"]
+    if args.use_slime_router and "RadixTreeMiddleware" in args.slime_router_middleware_paths:
+        assert not args.partial_rollout, "Currently parital rollout is not suppurted when using slime router"
+        retrieve_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/retrieve_from_text"
+        retrieve_payload = {"text": sample.prompt + output["text"], "return_logp": True}
+        retrieve_output = await post(retrieve_url, retrieve_payload)
+        sample.tokens = retrieve_output["tokens"]
+        sample.response += output["text"]
+        sample.loss_mask = retrieve_output["loss_mask"]
+        sample.response_length = get_response_lengths([sample.loss_mask])[0]
+        sample.loss_mask = sample.loss_mask[-sample.response_length :]
+        sample.rollout_log_probs = retrieve_output["rollout_logp"][-sample.response_length :]
+    else:
+        if "output_token_logprobs" in output["meta_info"]:
+            new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        else:
+            new_response_tokens, new_response_log_probs = [], []
+
+        # Update sample with tokens directly - avoiding re-tokenization
+        sample.tokens = sample.tokens + new_response_tokens
+        sample.response_length += len(new_response_tokens)
+        sample.response += output["text"]
+
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += new_response_log_probs
+
     if "weight_version" in output["meta_info"]:
         sample.weight_versions.append(output["meta_info"]["weight_version"])
-    if sample.rollout_log_probs is None:
-        sample.rollout_log_probs = []
-    sample.rollout_log_probs += new_response_log_probs
 
     match output["meta_info"]["finish_reason"]["type"]:
         case "length":
@@ -133,7 +189,12 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     return sample
 
 
-async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluation=False) -> Sample:
+async def generate_and_rm(
+    args: Namespace,
+    sample: Union[Sample, list[Sample]],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+) -> Union[Sample, list[Sample]]:
     # For samples with existing response, check if they're complete
     if sample.status == Sample.Status.COMPLETED or sample.status == Sample.Status.TRUNCATED:
         assert sample.response is not None
@@ -180,15 +241,23 @@ async def generate_and_rm(args, sample: Sample, sampling_params: dict, evaluatio
     return sample
 
 
-async def generate_and_rm_group(args, group: list[Sample], sampling_params: dict, evaluation=False) -> list[Sample]:
+async def generate_and_rm_group(
+    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+) -> list[Sample]:
     state = GenerateState(args)
 
     if state.aborted:
         return group
 
-    group = await asyncio.gather(
-        *[generate_and_rm(args, sample, sampling_params.copy(), evaluation=evaluation) for sample in group]
-    )
+    tasks = []
+    for idx, sample in enumerate(group):
+        current_sampling_params = sampling_params.copy()
+        if getattr(args, "sglang_enable_deterministic_inference", False):
+            seed = state.group_sampling_seeds[idx]
+            current_sampling_params["sampling_seed"] = seed
+        tasks.append(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
+
+    group = await asyncio.gather(*tasks)
 
     # for the rm that need the whole group, we will not do the rm here
     if not state.aborted and args.group_rm:
@@ -199,20 +268,18 @@ async def generate_and_rm_group(args, group: list[Sample], sampling_params: dict
     return group
 
 
-async def abort(args, rollout_id: int):
+async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     aborted_samples = []
 
     state = GenerateState(args)
     assert not state.aborted
     state.aborted = True
-    response = await get(
-        f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers", use_http2=args.use_http2
-    )
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
 
     # abort all the requests
     for url in response["urls"]:
         print(f"Abort request for {url}", flush=True)
-        await post(f"{url}/abort_request", {"abort_all": True}, use_http2=False)
+        await post(f"{url}/abort_request", {"abort_all": True})
 
     # make sure all the pending tasks are finished
     count = 0
@@ -237,7 +304,9 @@ async def abort(args, rollout_id: int):
     return aborted_samples
 
 
-async def generate_rollout_async(args, rollout_id: int, data_source) -> list[list[Sample]]:
+async def generate_rollout_async(
+    args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
+) -> tuple[list[list[Sample]], list[list[Sample]]]:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
@@ -246,7 +315,9 @@ async def generate_rollout_async(args, rollout_id: int, data_source) -> list[lis
         data_source: the data source to fetch
 
     Returns:
-        list[list[Sample]]: a list of samples generated by the rollout, the length of the list is exactly the same as the `rollout_batch_size`
+        tuple[list[list[Sample]], list[list[Sample]]]:
+            - data: a list of groups of samples generated by the rollout, length equals `rollout_batch_size`
+            - aborted_samples: any partial groups collected during abort when partial_rollout is enabled
     """
     assert args.rollout_global_dataset
 
@@ -256,6 +327,8 @@ async def generate_rollout_async(args, rollout_id: int, data_source) -> list[lis
     dynamic_filter = (
         load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
     )
+
+    metric_gatherer = _MetricGatherer()
 
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
@@ -277,13 +350,15 @@ async def generate_rollout_async(args, rollout_id: int, data_source) -> list[lis
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 print(
-                    f"First rollout sample: {[sample.prompt + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
                     flush=True,
                 )
                 do_print = False
 
             assert len(group) == args.n_samples_per_prompt
-            if dynamic_filter is not None and not dynamic_filter(args, group):
+            dynamic_filter_output = _call_dynamic_filter(dynamic_filter, args, group)
+            if not dynamic_filter_output.keep:
+                metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
                 state.remaining_batch_size -= 1
                 continue
 
@@ -296,7 +371,7 @@ async def generate_rollout_async(args, rollout_id: int, data_source) -> list[lis
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     print(
-        f"Finish rollout: {[sample.prompt + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
         flush=True,
     )
 
@@ -308,22 +383,53 @@ async def generate_rollout_async(args, rollout_id: int, data_source) -> list[lis
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    return data, aborted_samples
+    return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
+
+
+def _call_dynamic_filter(fn, *args, **kwargs):
+    if fn is None:
+        return DynamicFilterOutput(keep=True)
+
+    output = fn(*args, **kwargs)
+
+    # compatibility for legacy version
+    if not isinstance(output, DynamicFilterOutput):
+        output = DynamicFilterOutput(keep=output)
+
+    return output
+
+
+class _MetricGatherer:
+    def __init__(self):
+        self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
+
+    def on_dynamic_filter_drop(self, reason: Optional[str]):
+        if not reason:
+            return
+        self._dynamic_filter_drop_reason_count[reason] += 1
+
+    def collect(self):
+        return {
+            f"rollout/dynamic_filter/drop_{reason}": count
+            for reason, count in self._dynamic_filter_drop_reason_count.items()
+        }
 
 
 EVAL_PROMPT_DATASET = {}
 
 
-async def eval_rollout(args, rollout_id):
+async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
     assert not args.group_rm, "Group RM is not supported for eval rollout"
     results = {}
     for i in range(0, len(args.eval_prompt_data), 2):
         name, path = args.eval_prompt_data[i : i + 2]
         results.update(await eval_rollout_single_dataset(args, rollout_id, name, path))
-    return results, []
+    return RolloutFnEvalOutput(data=results), []
 
 
-async def eval_rollout_single_dataset(args, rollout_id, name, path):
+async def eval_rollout_single_dataset(
+    args: Namespace, rollout_id: int, name: str, path: str
+) -> dict[str, dict[str, list[Any]]]:
     """An example to implement the eval_rollout function for an rule based rm rollout generation.
 
     Args:
@@ -344,6 +450,7 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
             max_length=args.rollout_max_prompt_len,
             prompt_key=args.input_key if args.eval_input_key is None else args.eval_input_key,
             label_key=args.label_key if args.eval_label_key is None else args.eval_label_key,
+            multimodal_keys=args.multimodal_keys,
             metadata_key=args.metadata_key,
             tool_key=args.tool_key if args.eval_tool_key is None else args.eval_tool_key,
             apply_chat_template=args.apply_chat_template,
@@ -373,6 +480,9 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
+            if getattr(args, "sglang_enable_deterministic_inference", False):
+                sampling_params = sampling_params.copy()
+                sampling_params["sampling_seed"] = args.rollout_seed + j
             tasks.append(
                 generate_and_rm(
                     args,
@@ -388,7 +498,7 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
     for coro in asyncio.as_completed(tasks):
         sample = await coro
         if do_print:
-            print([sample.prompt + sample.response], sample.reward, flush=True)
+            print([str(sample.prompt) + sample.response], sample.reward, flush=True)
             do_print = False
         if isinstance(sample, list):
             data.extend(sample)
@@ -399,7 +509,7 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
 
     data.sort(key=lambda sample: sample.index)
 
-    reward_key = args.reward_key or args.eval_reward_key
+    reward_key = args.eval_reward_key or args.reward_key
     return {
         name: {
             "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
@@ -409,7 +519,9 @@ async def eval_rollout_single_dataset(args, rollout_id, name, path):
 
 
 # TODO remove this temp function
-def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
+def generate_rollout(
+    args: Namespace, rollout_id: int, data_buffer: Any, evaluation: bool = False
+) -> Union[RolloutFnTrainOutput, RolloutFnEvalOutput]:
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
     Args:
@@ -421,14 +533,19 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     Returns:
         list[list[Sample]]: a list of list of samples generated by the rollout
     """
-    completed_samples, aborted_samples = generate_abortable_samples(
+    output, aborted_samples = generate_abortable_samples(
         args, rollout_id, data_buffer.get_samples, evaluation=evaluation
     )
     data_buffer.add_samples(aborted_samples)
-    return completed_samples
+    return output
 
 
-def generate_abortable_samples(args, rollout_id, data_source, evaluation=False):
+def generate_abortable_samples(
+    args: Namespace,
+    rollout_id: int,
+    data_source: Callable[[int], list[list[Sample]]],
+    evaluation: bool = False,
+) -> tuple[Any, list[list[Sample]]]:
     assert args.rollout_global_dataset
     if evaluation:
         return run(eval_rollout(args, rollout_id))

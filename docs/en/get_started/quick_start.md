@@ -7,6 +7,19 @@ This document will guide you through setting up the environment and getting star
 
 Since slime may contain temporary patches for sglang/megatron, to avoid potential environment configuration issues, we strongly recommend **users to use our latest Docker image**, which comes pre-configured with all dependencies.
 
+### Hardware Support
+
+**slime** supports multiple NVIDIA GPU hardware platforms:
+
+- **B200 Series**: Fully supported with identical setup steps as H-series GPUs
+- **H-Series (H100/H200)**: Official support with comprehensive CI testing and stable performance
+
+**Important Notes**:
+- Latest Docker images are compatible with both B-series and H-series GPUs without additional configuration
+- Megatron backend on H-series GPUs has CI protection, thoroughly validated, recommended for production environments
+- B-series basic functionality is stable and suitable for development/testing, but currently lacks CI protection
+- Both hardware platforms use identical installation and startup procedures
+
 - For scenarios where Docker is not convenient, please refer to [build_conda.sh](https://github.com/THUDM/slime/blob/main/build_conda.sh);
 - For AMD support, please refer to [AMD Usage Tutorial](../platform_support/amd_tutorial.md).
 
@@ -16,12 +29,12 @@ Please execute the following commands to pull the latest image and start an inte
 
 ```shell
 # Pull the latest image
-docker pull zhuzilin/slime:latest
+docker pull slimerl/slime:latest
 
 # Start the container
 docker run --rm --gpus all --ipc=host --shm-size=16g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -it zhuzilin/slime:latest /bin/bash
+  -it slimerl/slime:latest /bin/bash
 ```
 
 ### Install slime
@@ -260,6 +273,10 @@ GRPO_ARGS=(
 )
 ```
 
+- `--advantage-estimator`: In addition to [GRPO](https://arxiv.org/abs/2402.03300), slime also supports several other training algorithms, such as [GSPO](https://arxiv.org/abs/2507.18071), [Reinforce++](https://arxiv.org/abs/2501.03262) and [Reinforce++ Baseline](https://arxiv.org/abs/2501.03262), and [PPO](https://arxiv.org/abs/1707.06347).
+- `--calculate-per-token-loss`: By default, slime calculates the loss on a per-sample basis, i.e., `mean(sum(sample_i) / len(sample_i))`. To calculate the loss on a per-token basis, i.e., `sum(sum(sample_i)) / sum(len(sample_i))`, you can enable this flag.
+- `--use-tis`: Enable this setting to use TIS (Truncated Importance Sampling), which is introduced by this [blog](https://fengyao.notion.site/off-policy-rl).
+
 ### OPTIMIZER_ARGS: Optimizer Parameters
 
 ```bash
@@ -384,7 +401,7 @@ And replace `--hf-checkpoint` with:
    # Used to load tokenizer and other information, actually won't use model weight parameters from hf path
    --hf-checkpoint /root/Qwen3-4B-FP8
 
-   # The megatron checkpoint still needs to be the dist weights converted from bf16 huggingface at the beginning, not modified because of FP rollout.
+   # The megatron checkpoint still needs to be the dist weights converted from bf16 huggingface at the beginning, not modified because of FP8 rollout.
    --ref-load /root/Qwen3-4B_torch_dist
 ```
 
@@ -498,7 +515,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
     # 7. Fill and return Sample object
     sample.response = full_response
     sample.tokens = ...
-    sample.loss_masks = loss_masks
+    sample.loss_mask = loss_masks
     return sample
 ```
 
@@ -517,10 +534,10 @@ Finally, in the training script, enable the above custom functions through the f
 ```bash
 CUSTOM_ARGS=(
    # Specify the path of custom generation function (format: path.to.your.file:function_name)
-   --custom-generate-function-path your_module.multiturn_logic:generate
+   --custom-generate-function-path your_module.multiturn_logic.generate
 
    # Specify the path of custom reward function
-   --custom-rm-path your_module.multiturn_logic:reward_func
+   --custom-rm-path your_module.multiturn_logic.reward_func
 )
 ```
 

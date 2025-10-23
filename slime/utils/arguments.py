@@ -1,6 +1,9 @@
+import argparse
+import json
 import os
 from typing import Any, Dict
 
+import yaml
 from transformers import AutoConfig
 
 from slime.backends.sglang_utils.arguments import add_sglang_arguments
@@ -30,6 +33,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
             parser.add_argument(
                 "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
+            )
+            parser.add_argument(
+                "--critic-num-nodes", type=int, default=None, help="Number of nodes for training actor"
+            )
+            parser.add_argument(
+                "--critic-num-gpus-per-node", type=int, default=None, help="Number of gpus per node for training actor"
             )
 
             parser.add_argument(
@@ -78,6 +87,17 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
+
+            return parser
+
+        def add_train_arguments(parser):
+            parser.add_argument(
+                "--train-backend",
+                type=str,
+                choices=["megatron", "fsdp"],
+                default="megatron",
+                help="The backend for training.",
+            )
 
             return parser
 
@@ -298,6 +318,46 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "It may be helpful for updating loss mask."
                 ),
             )
+            parser.add_argument(
+                "--rollout-external",
+                action="store_true",
+                default=False,
+                help="Use external SGLang instances instead of launching them inside the framework.",
+            )
+            parser.add_argument(
+                "--rollout-external-engine-addrs",
+                type=str,
+                default=None,
+                nargs="+",
+                help="Address and ports of the external engines.",
+            )
+            return parser
+
+        def add_fault_tolerance_arguments(parser):
+            parser.add_argument(
+                "--use-fault-tolerance",
+                action="store_true",
+                default=False,
+                help="Whether to enable the fault tolerance function during rollout.",
+            )
+            parser.add_argument(
+                "--rollout-health-check-interval",
+                type=float,
+                default=30.0,
+                help="Interval in seconds between rollout engine /health_generate checks during generate/eval.",
+            )
+            parser.add_argument(
+                "--rollout-health-check-timeout",
+                type=float,
+                default=30.0,
+                help="Timeout in seconds to wait for a rollout engine /health_generate response before killing it.",
+            )
+            parser.add_argument(
+                "--rollout-health-check-first-wait",
+                type=float,
+                default=300.0,
+                help="Time to wait for the compilation before the actual health check.",
+            )
             return parser
 
         # data
@@ -348,6 +408,14 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--apply-chat-template", action="store_true", default=False)
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
+            parser.add_argument(
+                "--multimodal-keys",
+                type=json.loads,
+                default=None,
+                help=(
+                    'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
+                ),
+            )
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
             parser.add_argument(
                 "--tool-key",
@@ -503,6 +571,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
+            reset_arg(parser, "--lr", type=float, default=1e-6)
+
+            parser.add_argument("--num-critic-only-steps", type=int, default=0, help="Number of critic only steps")
+            parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
+            parser.add_argument("--critic-save", type=str, default=None, help="The checkpoint for critic model.")
+            parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
 
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
             parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
@@ -512,6 +586,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729",
             )
+            parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for value loss")
             parser.add_argument(
                 "--kl-coef",
                 type=float,
@@ -540,14 +615,14 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--kl-loss-type",
                 type=str,
-                choices=["kl", "k2", "k3", "low_var_kl"],
-                default="kl",
-                help="Choose KL loss type: kl, k2, k3 low_var_kl",
+                choices=["k1", "k2", "k3", "low_var_kl"],
+                default="k1",
+                help="Choose KL loss type: kl, k2, k3, low_var_kl",
             )
             parser.add_argument(
                 "--advantage-estimator",
                 type=str,
-                choices=["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline"],
+                choices=["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "ppo"],
                 default="grpo",
             )
             parser.add_argument(
@@ -569,8 +644,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=0.0,
                 help="KL penalty coefficient for the loss function. This is added to the final PPO loss.",
             )
+            parser.add_argument(
+                "--ref-update-interval",
+                type=int,
+                default=None,
+                help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
+            )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
-            parser.add_argument("--gamma", type=float, default=1.0, help="Discount factor for rewards in REINFORCE++.")
+            parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
+            parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
                 "--disable-grpo-std-normalization",
@@ -611,6 +693,33 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=0,
                 help="Lower bound clipping threshold C for importance sampling ratios to control variance.",
+            )
+            parser.add_argument(
+                "--custom-tis-function-path",
+                type=str,
+                default=None,
+                help="Path to the custom TIS function.",
+            )
+
+            parser.add_argument(
+                "--use-routing-replay",
+                action="store_true",
+                default=False,
+            )
+            return parser
+
+        def add_router_arguments(parser):
+            parser.add_argument(
+                "--use-slime-router",
+                action="store_true",
+                default=False,
+                help="Whether to use SlimeRouter for text-based routing instead of SGLang token-based routing",
+            )
+            parser.add_argument(
+                "--slime-router-middleware-paths",
+                type=str,
+                nargs="+",
+                default="",
             )
             return parser
 
@@ -671,6 +780,20 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
 
+        # tensorboard
+        def add_tensorboard_arguments(parser):
+            # tb_project_name, tb_experiment_name
+            parser.add_argument("--use-tensorboard", action="store_true", default=False)
+            parser.add_argument(
+                "--tb-project-name",
+                type=str,
+                default=None,
+                help="Directory to store tensorboard logs. Default is  os.environ.get('TENSORBOARD_DIR') directory.",
+            )
+            parser.add_argument("--tb-experiment-name", type=str, default=None)
+
+            return parser
+
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -729,7 +852,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
 
         def add_network_arguments(parser):
             parser.add_argument("--http-proxy", type=str, default=None)
-            parser.add_argument("--use-http2", action="store_true", default=False)
+            parser.add_argument("--use-distributed-post", action="store_true", default=False)
             return parser
 
         def add_reward_model_arguments(parser):
@@ -812,7 +935,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--loss-mask-type",
                 type=str,
                 default="qwen",
-                choices=["qwen", "distill_qwen"],
+                choices=["qwen", "qwen3", "distill_qwen"],
                 help="Loss mask type",
             )
             return parser
@@ -845,28 +968,60 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--ci-test",
                 action="store_true",
             )
+            parser.add_argument(
+                "--ci-disable-kl-checker",
+                action="store_true",
+            )
+            parser.add_argument(
+                "--ci-metric-checker-key",
+                type=str,
+                default=None,
+            )
+            parser.add_argument(
+                "--ci-metric-checker-threshold",
+                type=float,
+                default=None,
+            )
             return parser
+
+        def add_sglang_tp_size():
+            temp_parser = argparse.ArgumentParser(add_help=False)
+            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
+            temp_args, _ = temp_parser.parse_known_args()
+            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
+            return sglang_tp_size
 
         # Add custom arguments in front to prevent overwritten some slime arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
         parser = add_cluster_arguments(parser)
+        parser = add_train_arguments(parser)
         parser = add_rollout_arguments(parser)
+        parser = add_fault_tolerance_arguments(parser)
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_wandb_arguments(parser)
+        parser = add_tensorboard_arguments(parser)
+        parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
         parser = add_ci_arguments(parser)
+        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
 
         # For megatron
         parser = add_custom_megatron_plugins_arguments(parser)
         try:
+            parser.add_argument(
+                "--custom-config-path",
+                type=str,
+                default=None,
+                help="Path to the YAML config for custom function arguments.",
+            )
             parser.add_argument("--padded-vocab-size", type=int, default=None)
         except:
             pass
@@ -888,14 +1043,14 @@ def warning_for_unfinished_backend(backend: str):
 def parse_args(add_custom_arguments=None):
     add_slime_arguments = get_slime_extra_args_provider(add_custom_arguments)
 
-    backend = os.environ.get("SLIME_BACKEND", "megatron").lower()
+    backend = parse_args_train_backend()
     if backend == "megatron":
         from slime.backends.megatron_utils import parse_args as megatron_parse_args
         from slime.backends.megatron_utils import set_default_megatron_args
         from slime.backends.megatron_utils import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_slime_arguments)
-        if getattr(args, "hf_checkpoint", None):
+        if args.hf_checkpoint:
             hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             if args.use_hf_config_for_megatron:
                 from slime.backends.megatron_utils.config_mapping import get_mapper
@@ -908,18 +1063,13 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
-    elif backend == "xtuner":
-        warning_for_unfinished_backend(backend)
-        from slime.backends.xtuner_utils.arguments import parse_args as xtuner_parse_args
-
-        args = xtuner_parse_args(add_slime_arguments)
-        args.rank = 0
-        args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     else:
         warning_for_unfinished_backend(backend)
         from slime.backends.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_slime_arguments)
+        args.rank = 0  # Primary process rank for wandb initialization
+        args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
     slime_validate_args(args)
 
@@ -938,6 +1088,16 @@ def parse_args(add_custom_arguments=None):
     sglang_validate_args(args)
 
     return args
+
+
+def parse_args_train_backend():
+    if os.environ.get("SLIME_BACKEND") is not None:
+        raise Exception("`SLIME_BACKEND` is deprecated, please use --train-backend directly.")
+
+    parser = argparse.ArgumentParser()
+    get_slime_extra_args_provider()(parser)
+    args_partial, _ = parser.parse_known_args()
+    return args_partial.train_backend
 
 
 def slime_validate_args(args):
@@ -1005,6 +1165,16 @@ def slime_validate_args(args):
         )
         args.debug_train_only = True
 
+    args.use_critic = args.advantage_estimator == "ppo"
+    if args.critic_num_gpus_per_node is None:
+        args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
+    if args.critic_num_nodes is None:
+        args.critic_num_nodes = args.actor_num_nodes
+    if args.critic_load is None:
+        args.critic_load = args.load
+    if args.critic_lr is None:
+        args.critic_lr = args.lr
+
     if args.debug_rollout_only:
         if args.colocate and args.rollout_num_gpus is None:
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
@@ -1027,6 +1197,8 @@ def slime_validate_args(args):
                 f"* actor_num_nodes {args.actor_num_nodes}, overriding rollout_num_gpus to match actor_num_gpus_per_node * actor_num_nodes."
             )
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
+            if args.use_critic:
+                args.rollout_num_gpus += args.critic_num_gpus_per_node * args.critic_num_nodes
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
@@ -1071,6 +1243,15 @@ def slime_validate_args(args):
         assert args.num_rollout is not None, (
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
+
+    if args.custom_config_path:
+        with open(args.custom_config_path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        for k, v in data.items():
+            if not hasattr(args, k):
+                setattr(args, k, v)
+            else:
+                print(f"Warning: Argument {k} is already set to {getattr(args, k)}, will not override with {v}.")
 
 
 def hf_validate_args(args, hf_config):

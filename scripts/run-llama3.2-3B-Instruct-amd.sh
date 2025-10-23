@@ -15,14 +15,14 @@ pkill -9 python
 set -euxo pipefail
 
 ### AMD Support ###
-SLIME_DIR="/home/yushensu/projects/slime" # Need to change to your own path
-export SLIME_DIR=$SLIME_DIR
+SLIME_DIR="${SLIME_DIR:-/home/yushensu/projects/slime}" # Default path if not set in environment
+export SLIME_DIR
 
-MODEL_DIR="/home/yushensu/projects/model" # Need to change to your own path
-export MODEL_DIR=$MODEL_DIR
+MODEL_DIR="${MODEL_DIR:-/home/yushensu/projects/model}" # Default path if not set in environment
+export MODEL_DIR
 
-DATA_DIR="/home/yushensu/projects/data"  # Need to change to your own path
-export DATA_DIR=$DATA_DIR
+DATA_DIR="${DATA_DIR:-/home/yushensu/projects/data}"  # Default path if not set in environment
+export DATA_DIR
 
 # For AMD GPU
 export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"} # Must set to 1
@@ -32,7 +32,7 @@ export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"} #You can ch
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
-# NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
+# NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 # if [ "$NVLINK_COUNT" -gt 0 ]; then
 #     HAS_NVLINK=1
 # else
@@ -148,7 +148,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disab
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/workspace/Megatron-LM-amd_version/\",
+    \"PYTHONPATH\": \"/workspace/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
   }
 }"
