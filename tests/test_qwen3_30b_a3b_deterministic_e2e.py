@@ -180,7 +180,7 @@ def _train_args(
         # model: Qwen3-30B-A3B (all MoE layers, standard GQA, no shared expert, no DSA)
         f"--num-layers {num_layers} --hidden-size 2048 --ffn-hidden-size 6144 "
         "--num-attention-heads 32 --num-query-groups 4 --kv-channels 128 "
-        f"--moe-layer-freq \"[1]*{num_layers}\" "
+        f"--moe-layer-freq [1]*{num_layers} "
         "--num-experts 128 --moe-router-topk 8 --moe-grouped-gemm "
         "--moe-ffn-hidden-size 768 "
         "--moe-router-score-function softmax "
