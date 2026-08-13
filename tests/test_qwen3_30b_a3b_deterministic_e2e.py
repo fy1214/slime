@@ -227,7 +227,7 @@ def _train_args(
         "--sglang-moe-dense-tp-size 1 --sglang-moe-a2a-backend deepep --sglang-deepep-mode low_latency "
         "--sglang-moe-runner-backend deep_gemm --sglang-fp8-gemm-runner-backend deep_gemm "
         f"--sglang-page-size 64 --sglang-kv-cache-dtype {kv_cache_dtype} "
-        "--sglang-attention-backend flash "
+        "--sglang-attention-backend fa4 "
         "--sglang-chunked-prefill-size 4096 --sglang-context-length 8192 "
         "--sglang-max-prefill-tokens 4096 --sglang-enable-fp32-moe-router "
         "--sglang-enable-deterministic-inference --sglang-disable-prefill-cuda-graph "
