@@ -784,7 +784,8 @@ def enable_sglang_layer0_input_rmsnorm(
         if module is None or getattr(module, "_slime_sglang_pipeline_input_rmsnorm_wrapped", False):
             continue
         if not hasattr(module, "weight") or not hasattr(module, "eps"):
-            raise RuntimeError(f"{layer_name}.input_layernorm is missing RMSNorm weight/eps")
+            # IdentityOp (TE spec fuses norm into QKV linear): handled elsewhere, skip
+            continue
 
         original_forward = module.forward
 
