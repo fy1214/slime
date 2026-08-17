@@ -4,6 +4,11 @@ from copy import deepcopy
 
 import wandb
 
+try:
+    from wandb.sdk.lib.runid import generate_id as wandb_generate_id
+except ImportError:
+    wandb_generate_id = wandb.util.generate_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +48,7 @@ def init_wandb_primary(args):
     # Prepare wandb init parameters
     # add random 6 length string with characters
     if args.wandb_random_suffix:
-        group = args.wandb_group + "_" + wandb.util.generate_id()
+        group = args.wandb_group + "_" + wandb_generate_id()
         run_name = f"{group}-RANK_{args.rank}"
     else:
         group = args.wandb_group
