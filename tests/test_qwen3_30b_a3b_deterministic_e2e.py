@@ -222,12 +222,13 @@ def _train_args(
 
         # SGLang rollout (deterministic, no DSA, standard flash attention)
         f"--rollout-num-gpus-per-engine {NUM_GPUS} --sglang-server-concurrency 128 "
-        "--sglang-mem-fraction-static 0.70 --sglang-enable-dp-attention --sglang-enable-dp-lm-head "
+        "--sglang-mem-fraction-static 0.50 --sglang-enable-dp-attention --sglang-enable-dp-lm-head "
         f"--sglang-ep-size {NUM_GPUS} --sglang-dp-size {NUM_GPUS} --sglang-moe-dp-size 1 "
         "--sglang-moe-dense-tp-size 1 --sglang-moe-a2a-backend deepep --sglang-deepep-mode low_latency "
         "--sglang-moe-runner-backend deep_gemm --sglang-fp8-gemm-runner-backend deep_gemm "
         f"--sglang-page-size 64 --sglang-kv-cache-dtype {kv_cache_dtype} "
         "--sglang-attention-backend fa4 "
+        "--sglang-enable-fused-qk-norm-rope "
         "--sglang-chunked-prefill-size 4096 --sglang-context-length 8192 "
         "--sglang-max-prefill-tokens 4096 --sglang-enable-fp32-moe-router "
         "--sglang-enable-deterministic-inference --sglang-disable-prefill-cuda-graph "
@@ -248,6 +249,16 @@ def _train_args(
         "--deterministic-mode --skip-eval-before-train "
         f"--ci-test --ci-disable-kl-checker --ci-train-rollout-logprob-abs-diff-threshold {threshold}",
     ]
+
+    # Optional: use the SGLang-aligned custom self-attention module. When
+    # QWEN3_MOE_ALIGNED_SPEC=1 (default in this gate for the FP32-residual-sum
+    # attention alignment work), route through the plugin instead of the
+    # default TE-fused SelfAttention.
+    if os.environ.get("QWEN3_MOE_ALIGNED_SPEC", "1") == "1":
+        # --spec expects two space-separated tokens: <module_location> <function_name>
+        groups.append(
+            "--spec slime_plugins.models.qwen3_moe_aligned get_qwen3_moe_aligned_spec"
+        )
 
     if sglang_layerwise_dump is not None:
         layer_list = " ".join(str(i) for i in range(num_layers))
