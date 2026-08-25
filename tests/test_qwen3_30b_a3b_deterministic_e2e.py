@@ -12,15 +12,25 @@ Key differences vs GLM-5.2 gate:
 - No shared expert, no --spec plugin (standard Megatron MoE)
 - moe-router-score-function softmax (not sigmoid), norm_topk_prob=true
 - vocab_size 151936
-- Model path: /home/admin/mingfa/model/hf/Qwen3-30B-A3B/
+- Model path: /home/admin/mingfa/model/hf/Qwen3-30B-A3B-FP8-experts
 
-Environment overrides (all optional):
+Environment overrides (all optional; values below are the gate defaults):
 * ``MAX_TRAIN_ROLLOUT_DIFF`` -- alignment threshold (default ``1e-6``).
-* ``SGLANG_KV_CACHE_DTYPE``  -- ``fp8_e4m3`` (default) or ``bfloat16``.
+* ``SGLANG_KV_CACHE_DTYPE``  -- ``bfloat16`` (default) or ``fp8_e4m3``.
+* ``HF_MODEL``              -- HF checkpoint path (default FP8-experts).
+* ``QWEN3_MOE_ALIGNED_SPEC`` -- ``1`` (use aligned attention plugin).
+* ``QWEN3_ALIGNED_USE_FUSED_QK_ROPE`` -- ``1``.
+* ``SGLANG_MASKED_GEMM_FAST_ACT`` -- ``0`` (overrides alignment_env's ``1``;
+  Qwen3 expert dim 768 cannot use the v2 masked quant kernel).
+* ``SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK`` -- ``1``.
+* ``--rollout-batch-size`` / ``SLIME_E2E_ROLLOUT_BATCH_SIZE`` -- rollout and
+  global batch size (default ``8``). CLI wins over the env var.
+* ``SLIME_E2E_CONTEXT_PARALLEL_SIZE`` -- Megatron ``--context-parallel-size``
+  (default ``1``). ``2`` needs the aligned FA plugin's CP gather path.
+  SGLang stays at ``attn_cp_size=1`` (full-seq FA).
 * ``MLP_SOCKET_IFNAME``      -- NIC for Ray/NCCL/GLOO/NVSHMEM.
 * ``SGLANG_ROOT``           -- deterministic SGLang checkout.
 * ``MEGATRON_ROOT``          -- Megatron checkout.
-* ``HF_MODEL``              -- HF checkpoint path.
 * ``PROMPT_DATA``           -- dataset path.
 """
 
@@ -38,7 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_MAX_TRAIN_ROLLOUT_DIFF = "9.999e-7"
 
-DEFAULT_HF_MODEL = "/home/admin/mingfa/model/hf/Qwen3-30B-A3B"
+DEFAULT_HF_MODEL = "/root/Qwen3-30B-A3B-FP8-experts"
 DEFAULT_PROMPT_DATA = "/root/datasets/dapo-math-17k/dapo-math-17k.jsonl"
 DEFAULT_SGLANG_ROOT = "/sgl-workspace/sglang"
 DEFAULT_MEGATRON_ROOT = "/root/Megatron-LM"
@@ -92,6 +102,18 @@ def _deterministic_env(
             "PYTHONUNBUFFERED": "1",
             "NO_PROXY": "*",
             "no_proxy": "*",
+            # Qwen3 gate defaults. Must override alignment_env's
+            # SGLANG_MASKED_GEMM_FAST_ACT=1 (768 not divisible by 16*128).
+            "QWEN3_MOE_ALIGNED_SPEC": os.environ.get("QWEN3_MOE_ALIGNED_SPEC", "1"),
+            "QWEN3_ALIGNED_USE_FUSED_QK_ROPE": os.environ.get(
+                "QWEN3_ALIGNED_USE_FUSED_QK_ROPE", "1"
+            ),
+            "SGLANG_MASKED_GEMM_FAST_ACT": os.environ.get(
+                "SGLANG_MASKED_GEMM_FAST_ACT", "0"
+            ),
+            "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK": os.environ.get(
+                "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK", "1"
+            ),
         }
     )
     if ifname:
@@ -159,12 +181,25 @@ def _train_args(
     rollout_max_response_len: int = 512,
     sglang_layerwise_dump: str | None = None,
     num_layers_override: int | None = None,
+    rollout_batch_size: int | None = None,
 ) -> str:
     """Build the train.py argument string for the Qwen3-30B-A3B alignment gate.
 
     num_layers_override: if set, override --num-layers (for quick smoke tests).
     """
     num_layers = num_layers_override if num_layers_override is not None else 48
+    if rollout_batch_size is None:
+        rollout_batch_size = int(os.environ.get("SLIME_E2E_ROLLOUT_BATCH_SIZE", "8"))
+    context_parallel_size = int(os.environ.get("SLIME_E2E_CONTEXT_PARALLEL_SIZE", "1"))
+    if context_parallel_size < 1:
+        raise ValueError(
+            f"SLIME_E2E_CONTEXT_PARALLEL_SIZE must be >= 1, got {context_parallel_size}"
+        )
+    if NUM_GPUS % context_parallel_size != 0:
+        raise ValueError(
+            f"NUM_GPUS={NUM_GPUS} is not divisible by "
+            f"SLIME_E2E_CONTEXT_PARALLEL_SIZE={context_parallel_size}"
+        )
     # deepgemm forward layers list: 0..num_layers-1
     deepgemm_layers = " ".join(str(i) for i in range(num_layers))
     # all layers are MoE
@@ -199,8 +234,8 @@ def _train_args(
 
         # rollout
         f"--prompt-data {prompt_data} --input-key prompt --label-key label --apply-chat-template "
-        "--rollout-shuffle --rm-type deepscaler --rollout-batch-size 8 --n-samples-per-prompt 1 "
-        "--global-batch-size 8 --num-rollout 1 --rollout-max-context-len 4096 "
+        f"--rollout-shuffle --rm-type deepscaler --rollout-batch-size {rollout_batch_size} --n-samples-per-prompt 1 "
+        f"--global-batch-size {rollout_batch_size} --num-rollout 1 --rollout-max-context-len 4096 "
         f"--rollout-max-response-len {rollout_max_response_len} "
         "--rollout-temperature 1.0 --rollout-top-p 1.0 "
         f"--save-debug-rollout-data {rollout_dump}",
@@ -215,7 +250,7 @@ def _train_args(
 
         # parallelism: EP8, TP1 (pure EP, matching production run-qwen3-30B-A3B.sh with EP8)
         f"--tensor-model-parallel-size 1 --sequence-parallel --pipeline-model-parallel-size 1 "
-        f"--context-parallel-size 1 --expert-model-parallel-size {NUM_GPUS} --expert-tensor-parallel-size 1 "
+        f"--context-parallel-size {context_parallel_size} --expert-model-parallel-size {NUM_GPUS} --expert-tensor-parallel-size 1 "
         "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
         "--use-dynamic-batch-size --max-tokens-per-gpu 8192 --data-pad-size-multiplier 512 "
         "--log-probs-chunk-size 1024",
@@ -275,13 +310,14 @@ def run_gate(
     layerwise_zero: bool = False,
     rollout_max_response_len: int = 32,
     num_layers_override: int | None = None,
+    rollout_batch_size: int | None = None,
 ) -> None:
     sglang_root = os.environ.get("SGLANG_ROOT", DEFAULT_SGLANG_ROOT)
     megatron_root = os.environ.get("MEGATRON_ROOT", DEFAULT_MEGATRON_ROOT)
     hf_model = os.environ.get("HF_MODEL", DEFAULT_HF_MODEL)
     prompt_data = _resolve_prompt_data(os.environ.get("PROMPT_DATA", DEFAULT_PROMPT_DATA))
     threshold = os.environ.get("MAX_TRAIN_ROLLOUT_DIFF", DEFAULT_MAX_TRAIN_ROLLOUT_DIFF)
-    kv_cache_dtype = os.environ.get("SGLANG_KV_CACHE_DTYPE", "fp8_e4m3")
+    kv_cache_dtype = os.environ.get("SGLANG_KV_CACHE_DTYPE", "bfloat16")
     if kv_cache_dtype not in {"bfloat16", "fp8_e4m3"}:
         raise ValueError(
             f"SGLANG_KV_CACHE_DTYPE must be bfloat16 or fp8_e4m3, got {kv_cache_dtype!r}"
@@ -314,10 +350,13 @@ def run_gate(
     env["RAY_ADDRESS"] = f"{master_addr}:{master_port}"
 
     num_layers = num_layers_override if num_layers_override is not None else 48
+    if rollout_batch_size is None:
+        rollout_batch_size = int(os.environ.get("SLIME_E2E_ROLLOUT_BATCH_SIZE", "8"))
     gate_name = "layerwise-zero" if layerwise_zero else "train/rollout"
     print(
         f"Running Qwen3-30B-A3B deterministic {gate_name} gate "
-        f"(layers={num_layers}, logprob limit={float(threshold):g}) ...",
+        f"(layers={num_layers}, samples={rollout_batch_size}, "
+        f"logprob limit={float(threshold):g}) ...",
         flush=True,
     )
 
@@ -344,6 +383,7 @@ def run_gate(
             rollout_max_response_len=rollout_max_response_len,
             sglang_layerwise_dump=(sglang_layerwise_dump if layerwise_zero else None),
             num_layers_override=num_layers_override,
+            rollout_batch_size=rollout_batch_size,
         ).split()
 
         _run(["pkill", "-9", "sglang"], check=False)
@@ -423,8 +463,8 @@ def _run(cmd, env=None, cwd=None, check=True, stream=False):
     return proc.returncode, "".join(lines)
 
 
-def test_qwen3_30b_a3b_deterministic_train_rollout_alignment():
-    run_gate()
+def test_qwen3_30b_a3b_deterministic_train_rollout_alignment(request):
+    run_gate(rollout_batch_size=request.config.getoption("rollout_batch_size"))
 
 
 if __name__ == "__main__":

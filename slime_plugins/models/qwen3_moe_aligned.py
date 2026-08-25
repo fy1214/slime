@@ -4,6 +4,11 @@
 # attention for Qwen3-30B-A3B (standard GQA, 32 Q / 4 KV heads, head_dim=128,
 # q_norm+k_norm on head_dim, RoPE base=1e6).
 #
+# Context parallel (CP>1): Megatron THD zigzag splits each sequence across the
+# CP group. This plugin all-gathers Q/K/V, unshuffles to original packed order,
+# runs the same per-seq FA4 as CP=1, then slices the local rows. RoPE uses
+# global in-sequence offsets, not arange(local_T).
+#
 # Strategy mirrors slime_plugins.models.glm5.glm5:
 #   * Register a spec that REPLACES layer.self_attention with a custom module
 #     while leaving mlp untouched (the DeepGEMM MoE forward hook already
@@ -17,6 +22,8 @@
 #     flash_attn.cute.flash_attn_varlen_func (FA4) -> o_proj. Every step
 #     mirrors SGLang qwen3_moe.py Qwen3MoeAttention.forward_prepare_native +
 #     forward_core.
+#   * Fused QK-Norm+RoPE and FA4 have no kernel backward. qwen3_attn_ops wraps
+#     them like GLM-5 SparseMLA: SGLang kernel forward, analytic/SDPA backward.
 
 from __future__ import annotations
 
@@ -129,13 +136,15 @@ def _apply_rope(
     cu_seqlens: torch.Tensor,
     rotary_dim: int,
     rotary_base: float,
+    positions: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Apply SGLang-aligned RoPE to x with shape [T, H, D]. Positions are
     reconstructed from cu_seqlens so pack layout matches SGLang."""
 
-    token_ids = torch.arange(x.shape[0], dtype=torch.int64, device=x.device)
-    seq_ids = torch.searchsorted(cu_seqlens[1:], token_ids, right=True)
-    positions = token_ids - cu_seqlens[seq_ids]
+    if positions is None:
+        token_ids = torch.arange(x.shape[0], dtype=torch.int64, device=x.device)
+        seq_ids = torch.searchsorted(cu_seqlens[1:], token_ids, right=True)
+        positions = token_ids - cu_seqlens[seq_ids]
     cache = _get_sglang_rope_cache(
         x.device,
         rotary_dim,
@@ -340,6 +349,45 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
         if _os.environ.get("QWEN3_ALIGNED_PROBE", "0") == "1":
             print(f"[QWEN3-ALIGNED v12-PROBE] Qwen3MoeAlignedSelfAttention __init__ layer={layer_number} q_size={self.q_size} kv_size={self.kv_size}", flush=True)
 
+    @staticmethod
+    def _cp_meta() -> tuple[int, int, object | None]:
+        try:
+            cp_size = int(mpu.get_context_parallel_world_size())
+            cp_rank = int(mpu.get_context_parallel_rank())
+            cp_group = mpu.get_context_parallel_group() if cp_size > 1 else None
+        except Exception:
+            return 1, 0, None
+        return cp_size, cp_rank, cp_group
+
+    def _gather_unshuffle_thd(self, local: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+        """All-gather CP-local THD tokens and restore original packed order."""
+        from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
+        from slime_plugins.models.qwen3_attn_ops import unshuffle_cp_rank_concat
+
+        cp_size, _, cp_group = self._cp_meta()
+        if cp_size <= 1 or cp_group is None:
+            return local
+        packed = gather_from_sequence_parallel_region(local.contiguous(), group=cp_group)
+        return unshuffle_cp_rank_concat(packed, cu_seqlens, cp_size=cp_size)
+
+    def _local_rope_positions(self, packed_seq_params: PackedSeqParams, local_tokens: int) -> torch.Tensor:
+        from slime_plugins.models.qwen3_attn_ops import thd_cp_local_positions
+
+        cp_size, cp_rank, _ = self._cp_meta()
+        cu_q = packed_seq_params.cu_seqlens_q
+        device = cu_q.device
+        if cp_size <= 1:
+            token_ids = torch.arange(local_tokens, dtype=torch.int64, device=device)
+            seq_ids = torch.searchsorted(cu_q[1:], token_ids, right=True)
+            return (token_ids - cu_q[seq_ids]).to(torch.int32)
+        positions = thd_cp_local_positions(cu_q, cp_size=cp_size, cp_rank=cp_rank, device=device)
+        if positions.numel() != local_tokens:
+            raise RuntimeError(
+                "THD CP RoPE position count mismatch: "
+                f"positions={positions.numel()} local_tokens={local_tokens} cp_size={cp_size}"
+            )
+        return positions
+
     # ------------------------------------------------------------------ #
     # Helpers                                                            #
     # ------------------------------------------------------------------ #
@@ -357,7 +405,11 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
                 from sglang.srt.batch_invariant_ops import rms_norm_batch_invariant
             except ImportError:
                 rms_norm_batch_invariant = None
-            if rms_norm_batch_invariant is not None:
+            # Triton RMS has no autograd. Keep it for the bit-exact no-grad
+            # path; training backward uses native RMSNorm.
+            if rms_norm_batch_invariant is not None and not (
+                torch.is_grad_enabled() and (q.requires_grad or k.requires_grad)
+            ):
                 q_flat = q.reshape(-1, self.head_dim)
                 k_flat = k.reshape(-1, self.head_dim)
                 q_flat = rms_norm_batch_invariant(
@@ -400,63 +452,22 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
         value: [T, num_kv_heads, head_dim] bf16 (unused here, only for shape)
         Returns (query, key) after QK-norm + RoPE. Value untouched.
         """
-        from sglang.jit_kernel.fused_qknorm_rope import fused_qk_norm_rope
+        from slime_plugins.models.qwen3_attn_ops import fused_qk_norm_rope_with_grad
+
         T = query.shape[0]
-        # Pack to SGLang block-concat layout [Q(nq*hd), K(nkv*hd), V(nkv*hd)].
-        q_flat = query.reshape(T, self.num_heads * self.head_dim)
-        k_flat = key.reshape(T, self.num_kv_heads * self.head_dim)
-        v_flat = value.reshape(T, self.num_kv_heads * self.head_dim)
-        qkv_packed = torch.cat([q_flat, k_flat, v_flat], dim=-1).contiguous()
-        # Position ids reconstructed from cu_seqlens_q (same as _apply_rope).
-        cu_q = packed_seq_params.cu_seqlens_q
-        token_ids = torch.arange(T, dtype=torch.int64, device=qkv_packed.device)
-        seq_ids = torch.searchsorted(cu_q[1:], token_ids, right=True)
-        positions = (token_ids - cu_q[seq_ids]).to(torch.int32)
-        q_w = self.q_norm.weight.to(torch.bfloat16)
-        k_w = self.k_norm.weight.to(torch.bfloat16)
-        # v32: dump positions before fused_qk_norm_rope
-        if not getattr(self, '_v32_pos_dumped', False):
-            import torch as _t32b, os as _o32b
-            _dd32b = '/tmp/qwen3_layer0_dumps/positions_meg'
-            _o32b.makedirs(_dd32b, exist_ok=True)
-            _rk32b = _t32b.distributed.get_rank() if _t32b.distributed.is_initialized() else 0
-            _t32b.save(positions.detach().cpu(), _dd32b + f'/positions.rank{_rk32b}.pt')
-            _t32b.save(qkv_packed.detach().cpu(), _dd32b + f'/qkv_packed_pre_rope.rank{_rk32b}.pt')
-            self._v32_pos_dumped = True
-        # v33b: print scalar params
-        if not getattr(self, '_v33b_printed', False):
-            import torch as _t33b
-            _rk33b = _t33b.distributed.get_rank() if _t33b.distributed.is_initialized() else 0
-            if _rk33b == 0:
-                print(f'[v33b-MEG] rotary_base={self.rotary_base} eps={self.rms_norm_eps}')
-                print(f'[v33b-MEG] num_heads={self.num_heads} num_kv_heads={self.num_kv_heads} head_dim={self.head_dim}')
-                print(f'[v33b-MEG] q_w dtype={q_w.dtype} shape={q_w.shape} sum={q_w.sum().item():.6f}')
-                print(f'[v33b-MEG] k_w dtype={k_w.dtype} shape={k_w.shape} sum={k_w.sum().item():.6f}')
-            self._v33b_printed = True
-        fused_qk_norm_rope(
-            qkv_packed,
-            self.num_heads,
-            self.num_kv_heads,
-            self.num_kv_heads,
-            self.head_dim,
-            self.rms_norm_eps,
+        positions = self._local_rope_positions(packed_seq_params, T)
+        q_w = self.q_norm.weight
+        k_w = self.k_norm.weight
+        query, key, value_v = fused_qk_norm_rope_with_grad(
+            query,
+            key,
+            value,
             q_w,
             k_w,
-            self.rotary_base,
-            True,  # is_neox
             positions,
-            1.0,  # yarn factor
-            0.0,  # yarn low
-            0.0,  # yarn high
-            1.0,  # yarn attention_factor
+            eps=self.rms_norm_eps,
+            rotary_base=self.rotary_base,
         )
-        q_size = self.num_heads * self.head_dim
-        kv_size = self.num_kv_heads * self.head_dim
-        q_out, k_out, v_out = qkv_packed.split([q_size, kv_size, kv_size], dim=-1)
-        query = q_out.reshape(T, self.num_heads, self.head_dim)
-        key = k_out.reshape(T, self.num_kv_heads, self.head_dim)
-        # v22: return value view of qkv_packed so fa4 sees identical stride to SGL.
-        value_v = v_out.reshape(T, self.num_kv_heads, self.head_dim)
         return query, key, value_v
 
     def _fa4_attention(
@@ -468,84 +479,21 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
     ) -> torch.Tensor:
         """FA4 varlen forward. query/key/value are [T, H, D] (already squeezed)."""
 
-        from sglang.jit_kernel.flash_attention_v4 import flash_attn_varlen_func
+        from slime_plugins.models.qwen3_attn_ops import fa4_varlen_with_grad
 
         cu_q = packed_seq_params.cu_seqlens_q.to(torch.int32)
         cu_kv = packed_seq_params.cu_seqlens_kv.to(torch.int32)
-        max_sq = int(packed_seq_params.max_seqlen_q)
-        max_sk = int(packed_seq_params.max_seqlen_kv)
-
-        # v27: dump fa4 kwargs
-        if getattr(self, 'layer_number', 0) == 1 and not getattr(self, '_v27_kw_dumped', False):
-            import torch as _t27, os as _o27
-            _dd = '/tmp/qwen3_layer0_dumps/fa_kwargs_plugin'
-            _o27.makedirs(_dd, exist_ok=True)
-            _rk = _t27.distributed.get_rank() if _t27.distributed.is_initialized() else 0
-            _kw = {
-                'q_shape': tuple(query.shape),
-                'q_dtype': str(query.dtype),
-                'q_stride': tuple(query.stride()),
-                'q_is_contig': bool(query.is_contiguous()),
-                'k_shape': tuple(key.shape),
-                'k_dtype': str(key.dtype),
-                'k_stride': tuple(key.stride()),
-                'v_shape': tuple(value.shape),
-                'v_dtype': str(value.dtype),
-                'v_stride': tuple(value.stride()),
-                'cu_q': cu_q.detach().cpu().tolist(),
-                'cu_kv': cu_kv.detach().cpu().tolist(),
-                'max_sq': max_sq, 'max_sk': max_sk,
-                'softmax_scale': float(self.scaling),
-                'causal': True,
-                'softcap': 0.0,
-            }
-            import json as _j27
-            with open(_dd + f'/rank{_rk}.json','w') as _f: _j27.dump(_kw, _f, indent=2)
-            self._v27_kw_dumped = True
-        # v29: unpack packed batch, per-seq fa4
         query = query.contiguous()
         key = key.contiguous()
         value = value.contiguous()
-        # v31: dump fa4 input tensors
-        if getattr(self, 'layer_number', 0) == 1 and not getattr(self, '_v31_dumped', False):
-            import torch as _t31, os as _o31
-            _dd31 = '/tmp/qwen3_layer0_dumps/fa4_inputs_meg'
-            _o31.makedirs(_dd31, exist_ok=True)
-            _rk31 = _t31.distributed.get_rank() if _t31.distributed.is_initialized() else 0
-            _t31.save(query.detach().cpu(), _dd31 + f'/q.rank{_rk31}.pt')
-            _t31.save(key.detach().cpu(), _dd31 + f'/k.rank{_rk31}.pt')
-            _t31.save(value.detach().cpu(), _dd31 + f'/v.rank{_rk31}.pt')
-            _t31.save(cu_q.detach().cpu(), _dd31 + f'/cu_q.rank{_rk31}.pt')
-            _t31.save(cu_kv.detach().cpu(), _dd31 + f'/cu_kv.rank{_rk31}.pt')
-            self._v31_dumped = True
-        n_seq = cu_q.numel() - 1
-        outs = []
-        for _s in range(n_seq):
-            _sq = int(cu_q[_s+1] - cu_q[_s])
-            _sk = int(cu_kv[_s+1] - cu_kv[_s])
-            if _sq == 0:
-                outs.append(query.new_zeros(0, query.shape[1], query.shape[2]))
-                continue
-            _q1 = query[int(cu_q[_s]):int(cu_q[_s+1])].contiguous()
-            _k1 = key[int(cu_kv[_s]):int(cu_kv[_s+1])].contiguous()
-            _v1 = value[int(cu_kv[_s]):int(cu_kv[_s+1])].contiguous()
-            _cu1 = torch.tensor([0, _sq], device=query.device, dtype=torch.int32)
-            _ck1 = torch.tensor([0, _sk], device=query.device, dtype=torch.int32)
-            _o1 = flash_attn_varlen_func(
-                _q1, _k1, _v1,
-                cu_seqlens_q=_cu1,
-                cu_seqlens_k=_ck1,
-                max_seqlen_q=_sq,
-                max_seqlen_k=_sk,
-                softmax_scale=self.scaling,
-                causal=True,
-                softcap=0.0,
-            )
-            if isinstance(_o1, tuple):
-                _o1 = _o1[0]
-            outs.append(_o1)
-        out = torch.cat(outs, dim=0) if len(outs) > 1 else outs[0]
-        return out
+        return fa4_varlen_with_grad(
+            query,
+            key,
+            value,
+            cu_q,
+            cu_kv,
+            softmax_scale=self.scaling,
+        )
 
     # ------------------------------------------------------------------ #
     # Forward                                                            #
@@ -569,12 +517,6 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         import os as _os
         import torch as _th
-        _dump = _os.environ.get("QWEN3_ALIGNED_LAYER0_DUMP", "0") == "1" and self.layer_number == 1
-        if _dump and not getattr(self, "_dumped", False):
-            _ddir = "/tmp/qwen3_layer0_dumps/megatron"
-            _os.makedirs(_ddir, exist_ok=True)
-            _RANK = _th.distributed.get_rank() if _th.distributed.is_initialized() else 0
-            _th.save(hidden_states.detach().float().cpu(), _ddir + f"/plugin_input_layernorm_output.rank{_RANK}.pt")
         assert packed_seq_params is not None, (
             "Qwen3MoeAlignedSelfAttention requires packed_seq_params (THD layout)"
         )
@@ -602,31 +544,38 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
         value = value.reshape(T, num_groups, self.head_dim)
 
         # v18: optional SGLang fused QK-Norm + RoPE path.
-        _use_fused_qk_rope = _os.environ.get("QWEN3_ALIGNED_USE_FUSED_QK_ROPE", "0") == "1" and query.dtype == _th.bfloat16
+        _use_fused_qk_rope = _os.environ.get("QWEN3_ALIGNED_USE_FUSED_QK_ROPE", "1") == "1" and query.dtype == _th.bfloat16
         if _use_fused_qk_rope:
             query, key, value = self._apply_fused_qk_norm_rope(query, key, value, packed_seq_params)
-            # v32: dump positions
-            if getattr(self, 'layer_number', 0) == 1 and not getattr(self, '_v32_dumped', False):
-                import torch as _t32, os as _o32
-                _dd32 = '/tmp/qwen3_layer0_dumps/positions_meg'
-                _o32.makedirs(_dd32, exist_ok=True)
-                _rk32 = _t32.distributed.get_rank() if _t32.distributed.is_initialized() else 0
-                _t32.save(packed_seq_params.cu_seqlens_q.detach().cpu(), _dd32 + f'/cu_seqlens_q.rank{_rk32}.pt')
-                _t32.save(packed_seq_params.cu_seqlens_kv.detach().cpu(), _dd32 + f'/cu_seqlens_kv.rank{_rk32}.pt')
-                _t32.save(packed_seq_params.qkv_format.value if hasattr(packed_seq_params.qkv_format, 'value') else torch.tensor(0), _dd32 + f'/qkv_format.rank{_rk32}.txt')
-                self._v32_dumped = True
         else:
             # Per-head RMSNorm on head_dim (matches SGLang apply_qk_norm).
             query, key = self._apply_qk_norm(query, key)
 
-            # RoPE (SGLang-aligned). Positions are derived from cu_seqlens_q/kv.
+            # RoPE (SGLang-aligned). CP>1 uses global offsets inside each seq.
+            positions = self._local_rope_positions(packed_seq_params, query.shape[0])
+            query = _apply_rope(
+                query, packed_seq_params.cu_seqlens_q, self.head_dim, self.rotary_base, positions=positions
+            )
+            key = _apply_rope(
+                key, packed_seq_params.cu_seqlens_kv, self.head_dim, self.rotary_base, positions=positions
+            )
+
+        cp_size, cp_rank, _ = self._cp_meta()
+        if cp_size > 1:
             cu_q = packed_seq_params.cu_seqlens_q
-            cu_kv = packed_seq_params.cu_seqlens_kv
-            query = _apply_rope(query, cu_q, self.head_dim, self.rotary_base)
-            key = _apply_rope(key, cu_kv, self.head_dim, self.rotary_base)
+            query = self._gather_unshuffle_thd(query, cu_q)
+            key = self._gather_unshuffle_thd(key, cu_q)
+            value = self._gather_unshuffle_thd(value, cu_q)
 
         # FA4 varlen attention. Output is [T, num_heads * head_dim].
         core_attn_out = self._fa4_attention(query, key, value, packed_seq_params)
+        if cp_size > 1:
+            from slime_plugins.models.qwen3_5_vl_utils import get_packed_cp_local_indices
+
+            local_idx = get_packed_cp_local_indices(
+                packed_seq_params.cu_seqlens_q, cp_size, cp_rank, core_attn_out.device
+            )
+            core_attn_out = core_attn_out.index_select(0, local_idx)
         # core_attn_out: [T, num_heads, head_dim] -> flatten heads
         core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], -1)
         # Restore [T, 1, num_heads*head_dim] so RowParallelLinear sees the
@@ -635,15 +584,6 @@ class Qwen3MoeAlignedSelfAttention(MegatronModule):
         core_attn_out = core_attn_out.unsqueeze(1)
 
         output, bias = self.linear_proj(core_attn_out)
-        if _dump and not getattr(self, "_dumped", False):
-            _th.save(mixed_qkv.detach().float().cpu(), _ddir + f"/plugin_mixed_qkv.rank{_RANK}.pt")
-            _th.save(query.detach().float().cpu(), _ddir + f"/plugin_query_after_rope.rank{_RANK}.pt")
-            _th.save(key.detach().float().cpu(), _ddir + f"/plugin_key_after_rope.rank{_RANK}.pt")
-            _th.save(value.detach().float().cpu(), _ddir + f"/plugin_value.rank{_RANK}.pt")
-            _th.save(core_attn_out.detach().float().cpu(), _ddir + f"/plugin_core_attn_out.rank{_RANK}.pt")
-            _th.save(output.detach().float().cpu(), _ddir + f"/plugin_attention_output.rank{_RANK}.pt")
-            self._dumped = True
-            print(f"[MG-HOOK] plugin layer 0 dumps saved to {_ddir}", flush=True)
         return output, bias
 
 

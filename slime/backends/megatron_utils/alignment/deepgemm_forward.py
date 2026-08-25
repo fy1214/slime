@@ -516,6 +516,12 @@ def _wrap_te_linear(module: torch.nn.Module, module_name: str) -> bool:
 
     class_name = type(module).__name__
     if class_name not in _SUPPORTED_TE_CLASS_NAMES:
+        # qwen3_moe_aligned spec swaps attention linear_qkv/linear_proj to plain
+        # ColumnParallelLinear / RowParallelLinear. These are intentionally
+        # left as BF16 matmul (matches SGLang attention path) and skipped here.
+        import os
+        if os.environ.get('SLIME_DEEPGEMM_SKIP_NON_TE', '1') == '1' and class_name in {'ColumnParallelLinear', 'RowParallelLinear', 'Linear'}:
+            return False
         raise RuntimeError(f"DeepGEMM target {module_name} has unsupported module class {class_name}")
     if getattr(module, "use_bias", False):
         raise RuntimeError(f"DeepGEMM alignment probe currently requires bias-free linears: {module_name}")
@@ -784,8 +790,7 @@ def enable_sglang_layer0_input_rmsnorm(
         if module is None or getattr(module, "_slime_sglang_pipeline_input_rmsnorm_wrapped", False):
             continue
         if not hasattr(module, "weight") or not hasattr(module, "eps"):
-            # IdentityOp (TE spec fuses norm into QKV linear): handled elsewhere, skip
-            continue
+            continue  # skip: missing weight/eps (offloaded?)
 
         original_forward = module.forward
 
@@ -956,7 +961,7 @@ def enable_sglang_final_rmsnorm(
             if getattr(module, "_slime_sglang_final_rmsnorm_wrapped", False):
                 continue
             if not hasattr(module, "weight") or not hasattr(module, "eps"):
-                raise RuntimeError(f"{module_name} is missing RMSNorm weight/eps")
+                continue  # skip: missing weight/eps
 
             decoder_name = module_name.removesuffix(".final_layernorm")
             decoder = named_modules.get(decoder_name)

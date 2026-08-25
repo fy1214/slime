@@ -2728,6 +2728,103 @@ def _validate_and_order_route_preserving_outputs(
     return expert_outputs.index_select(0, route_rows)
 
 
+
+def _sglang_unbiased_softmax_topk_routing(
+    logits: torch.Tensor,
+    topk: int,
+    scaling_factor: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Match SGLang Qwen3 unbiased softmax top-k.
+
+    Production SGLang uses the Triton JIT ``moe_fused_gate`` (default
+    ``SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK=1``), not AOT
+    ``sgl_kernel.topk_softmax``.  The expert set is the same, but the FP32
+    weights differ by 1-2 ULP and that flips sparse BF16 combine values.
+    GLM biased / grouped routers keep Megatron's original function.
+    """
+    if logits.ndim != 2:
+        raise ValueError(f"Expected 2D logits [tokens, experts], got {tuple(logits.shape)}")
+    num_tokens, num_experts = logits.shape
+    if num_tokens == 0:
+        routing_probs = logits.new_empty((0, num_experts))
+        routing_map = torch.zeros((0, num_experts), dtype=torch.bool, device=logits.device)
+        return routing_probs, routing_map
+
+    from sglang.jit_kernel.moe_fused_gate import moe_fused_gate
+    from slime.utils.routing_replay import _capture_ordered_topk
+
+    # Same call as sglang.srt.layers.moe.topk.fused_topk for softmax scoring.
+    zero_bias = torch.zeros(num_experts, dtype=torch.float32, device=logits.device)
+    topk_weights, topk_ids = moe_fused_gate(
+        logits.float(),
+        zero_bias,
+        topk,
+        scoring_func="softmax",
+        renormalize=True,
+    )
+    if scaling_factor is not None and scaling_factor != 1.0:
+        topk_weights = topk_weights * float(scaling_factor)
+    top_indices = topk_ids.to(dtype=torch.int64)
+    _capture_ordered_topk(top_indices)
+
+    routing_probs = torch.zeros((num_tokens, num_experts), dtype=logits.dtype, device=logits.device)
+    rows = torch.arange(num_tokens, device=logits.device).unsqueeze(1)
+    routing_probs.index_put_((rows, top_indices), topk_weights.to(dtype=logits.dtype), accumulate=False)
+    routing_map = torch.zeros((num_tokens, num_experts), dtype=torch.bool, device=logits.device)
+    routing_map.index_put_(
+        (rows, top_indices),
+        torch.ones((num_tokens, topk), dtype=torch.bool, device=logits.device),
+        accumulate=False,
+    )
+    return routing_probs, routing_map
+
+
+def _install_sglang_topk_softmax_routing() -> None:
+    """Replace Megatron unbiased-softmax top-k with SGLang moe_fused_gate."""
+    import megatron.core.transformer.moe.moe_utils as moe_utils
+    import megatron.core.transformer.moe.router as megatron_router
+
+    if getattr(megatron_router, "_slime_sglang_topk_softmax_patched", False):
+        return
+    original = megatron_router.topk_routing_with_score_function
+
+    def topk_routing_with_score_function(
+        logits,
+        topk,
+        use_pre_softmax=False,
+        num_groups=None,
+        group_topk=None,
+        scaling_factor=None,
+        score_function="softmax",
+        expert_bias=None,
+        fused=False,
+        router_replay=None,
+    ):
+        if (
+            score_function == "softmax"
+            and expert_bias is None
+            and not group_topk
+        ):
+            return _sglang_unbiased_softmax_topk_routing(logits, topk, scaling_factor)
+        return original(
+            logits,
+            topk,
+            use_pre_softmax=use_pre_softmax,
+            num_groups=num_groups,
+            group_topk=group_topk,
+            scaling_factor=scaling_factor,
+            score_function=score_function,
+            expert_bias=expert_bias,
+            fused=fused,
+            router_replay=router_replay,
+        )
+
+    # TopKRouter.routing binds this name in router.py, not moe_utils.
+    megatron_router.topk_routing_with_score_function = topk_routing_with_score_function
+    moe_utils.topk_routing_with_score_function = topk_routing_with_score_function
+    megatron_router._slime_sglang_topk_softmax_patched = True
+
+
 def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
     """Match SGLang low-latency reduction over Megatron normal DeepEP."""
     if getattr(mlp, "_slime_sglang_deepep_alignment", False):
@@ -2745,6 +2842,7 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
             f"layer {global_layer} has {type(manager).__name__}"
         )
     scaling_factor = float(router.config.moe_router_topk_scaling_factor or 1.0)
+    _install_sglang_topk_softmax_routing()
     original_routing = router.routing
 
     def routing_without_final_scaling(
