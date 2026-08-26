@@ -7,12 +7,42 @@ from slime.backends.megatron_utils.kernels.fp8_kernel import blockwise_cast_to_f
 from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
 
 
-def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
+def _ignored_module_names(quantization_config):
+    names = []
+    for key in ("modules_to_not_convert", "ignored_layers", "ignore"):
+        value = quantization_config.get(key) or []
+        names.extend(value)
+    return names
+
+
+def _should_skip_fp8_quant(converted_name, ignored_module_names):
+    """Keep HF-ignored linears in BF16 (e.g. Qwen3 FP8-experts QKV/O/LN/gate)."""
+    if not ignored_module_names:
+        return False
+    stem = converted_name[: -len(".weight")] if converted_name.endswith(".weight") else converted_name
+    for rule in ignored_module_names:
+        if not rule:
+            continue
+        if stem == rule or converted_name == rule:
+            return True
+        if stem.startswith(rule) or converted_name.startswith(rule):
+            return True
+    return False
+
+
+def _maybe_quantize_param(name, weight, weight_block_size, ignored_module_names, transform_ue8m0=True):
+    if _should_skip_fp8_quant(name, ignored_module_names):
+        return [(name, weight)]
+    return _quantize_param(name, weight, weight_block_size, transform_ue8m0)
+
+
+def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config, transform_ue8m0=True):
     assert quantization_config["quant_method"] == "fp8"
     fmt = quantization_config.get("fmt", "e4m3")
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
+    ignored_module_names = _ignored_module_names(quantization_config)
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -43,7 +73,11 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _maybe_quantize_param(
+                        converted_name, param, weight_block_size, ignored_module_names, transform_ue8m0
+                    )
+                )
 
             return quantize_named_params
 
@@ -58,7 +92,11 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ]:
             quantize_named_params = []
             for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _maybe_quantize_param(
+                        converted_name, param, weight_block_size, ignored_module_names, transform_ue8m0
+                    )
+                )
 
             return quantize_named_params
 
@@ -83,7 +121,9 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(converted_name, param, weight_block_size))
+            quantize_named_params.extend(
+                _maybe_quantize_param(converted_name, param, weight_block_size, ignored_module_names, transform_ue8m0)
+            )
 
         return quantize_named_params
 
@@ -91,7 +131,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(name, weight, weight_block_size):
+def _quantize_param(name, weight, weight_block_size, transform_ue8m0=True):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
@@ -100,7 +140,8 @@ def _quantize_param(name, weight, weight_block_size):
             weight_block_size=weight_block_size
         ):
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
-            scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
+            if transform_ue8m0:
+                scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
             qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")

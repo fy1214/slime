@@ -27,7 +27,6 @@ Environment overrides (all optional; values below are the gate defaults):
   global batch size (default ``8``). CLI wins over the env var.
 * ``SLIME_E2E_CONTEXT_PARALLEL_SIZE`` -- Megatron ``--context-parallel-size``
   (default ``1``). ``2`` needs the aligned FA plugin's CP gather path.
-  SGLang stays at ``attn_cp_size=1`` (full-seq FA).
 * ``MLP_SOCKET_IFNAME``      -- NIC for Ray/NCCL/GLOO/NVSHMEM.
 * ``SGLANG_ROOT``           -- deterministic SGLang checkout.
 * ``MEGATRON_ROOT``          -- Megatron checkout.
@@ -195,11 +194,6 @@ def _train_args(
         raise ValueError(
             f"SLIME_E2E_CONTEXT_PARALLEL_SIZE must be >= 1, got {context_parallel_size}"
         )
-    if NUM_GPUS % context_parallel_size != 0:
-        raise ValueError(
-            f"NUM_GPUS={NUM_GPUS} is not divisible by "
-            f"SLIME_E2E_CONTEXT_PARALLEL_SIZE={context_parallel_size}"
-        )
     # deepgemm forward layers list: 0..num_layers-1
     deepgemm_layers = " ".join(str(i) for i in range(num_layers))
     # all layers are MoE
@@ -259,7 +253,7 @@ def _train_args(
         f"--rollout-num-gpus-per-engine {NUM_GPUS} --sglang-server-concurrency 128 "
         "--sglang-mem-fraction-static 0.50 --sglang-enable-dp-attention --sglang-enable-dp-lm-head "
         f"--sglang-ep-size {NUM_GPUS} --sglang-dp-size {NUM_GPUS} --sglang-moe-dp-size 1 "
-        "--sglang-moe-dense-tp-size 1 --sglang-moe-a2a-backend deepep --sglang-deepep-mode low_latency "
+        f"--sglang-moe-dense-tp-size 1 --sglang-moe-a2a-backend deepep --sglang-deepep-mode {os.environ.get('SLIME_E2E_DEEPEP_MODE', 'low_latency')} "
         "--sglang-moe-runner-backend deep_gemm --sglang-fp8-gemm-runner-backend deep_gemm "
         f"--sglang-page-size 64 --sglang-kv-cache-dtype {kv_cache_dtype} "
         "--sglang-attention-backend fa4 "
@@ -294,6 +288,9 @@ def _train_args(
         groups.append(
             "--spec slime_plugins.models.qwen3_moe_aligned get_qwen3_moe_aligned_spec"
         )
+
+    if os.environ.get("SLIME_E2E_DISABLE_DECODE_CG", "0") == "1":
+        groups.append("--sglang-disable-decode-cuda-graph")
 
     if sglang_layerwise_dump is not None:
         layer_list = " ".join(str(i) for i in range(num_layers))
