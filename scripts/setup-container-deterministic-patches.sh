@@ -84,7 +84,7 @@ apply_patches() {
         apply_git_patch "$MEGATRON_DIR" "${PATCH_DIR}/megatron-sglang-aligned.patch"
     fi
 
-    log "Applying SGLang patches (deterministic + Qwen3) ..."
+    log "Applying SGLang patches (deterministic + Qwen3 + NVFP4) ..."
     local sglang_patches=(
         sglang.patch
         sglang-top_p.patch
@@ -92,6 +92,7 @@ apply_patches() {
         sglang-pull_weights.patch
         sglang-deterministic.patch
         sglang-qwen3-deterministic.patch
+        sglang-nvfp4-pertoken.patch
     )
     for patch in "${sglang_patches[@]}"; do
         local patch_path="${PATCH_DIR}/${patch}"
