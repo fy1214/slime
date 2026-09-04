@@ -59,6 +59,20 @@ class SafetensorReader:
             tensor = tensor * scale[:, None, :, None]
             tensor = tensor.reshape(block_rows * 128, block_columns * 128)[:rows, :columns]
             tensor = tensor.to(torch.bfloat16)
+            return tensor
+
+        if name.endswith(".weight") and tensor.dtype == torch.uint8:
+            stem = name[: -len(".weight")]
+            block_scale_name = f"{stem}.weight_scale"
+            global_scale_name = f"{stem}.weight_scale_2"
+            if block_scale_name in self and global_scale_name in self:
+                from slime.backends.megatron_utils.hf_to_megatron.nvfp4_dequant import (
+                    dequantize_nvfp4_weight,
+                )
+
+                block_scale = self.get_tensor(block_scale_name)
+                global_scale = self.get_tensor(global_scale_name)
+                return dequantize_nvfp4_weight(packed=tensor, block_scale=block_scale, global_scale=global_scale)
         return tensor
 
 

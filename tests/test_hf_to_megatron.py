@@ -357,5 +357,32 @@ def test_reader_dequantizes_block_scaled_fp8(tmp_path):
     assert torch.equal(loaded, weight.to(torch.bfloat16) * 2)
 
 
+@pytest.mark.unit
+def test_reader_dequantizes_modelopt_nvfp4_decode_scale(tmp_path):
+    from slime.backends.megatron_utils.hf_to_megatron.nvfp4_dequant import (
+        FLOAT4_E2M1_MAX,
+        FLOAT8_E4M3_MAX,
+    )
+
+    packed = torch.full((16, 8), 0x77, dtype=torch.uint8)
+    block_scale = torch.full((16, 1), 448.0).to(torch.float8_e4m3fn)
+    expected_amax = 0.25
+    weight_scale_2 = torch.tensor(expected_amax / (FLOAT4_E2M1_MAX * FLOAT8_E4M3_MAX))
+    save_file(
+        {
+            "linear.weight": packed,
+            "linear.weight_scale": block_scale,
+            "linear.weight_scale_2": weight_scale_2,
+        },
+        tmp_path / "model.safetensors",
+    )
+
+    loaded = SafetensorReader(tmp_path).get_tensor("linear.weight")
+
+    assert loaded.dtype == torch.bfloat16
+    assert loaded.shape == (16, 16)
+    torch.testing.assert_close(loaded.float(), torch.full((16, 16), expected_amax), atol=1e-3, rtol=1e-3)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

@@ -18,5 +18,14 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
         # only int4 at the moment.
         return quantize_params_compressed_tensors(converted_named_params, quantization_config)
 
-    # Unknown quant method (e.g. mxfp4) — pass through BF16 params as-is
+    quant_algo = str(quantization_config.get("quant_algo", "")).upper()
+    if quantization_config.get("quant_method") in {"modelopt", "modelopt_fp4"} or quant_algo in {
+        "NVFP4",
+        "FP4",
+    }:
+        from .quantizer_nvfp4 import quantize_params_nvfp4
+
+        return quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config)
+
+    # Unknown quant method — pass through BF16 params as-is
     return converted_named_params

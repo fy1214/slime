@@ -1501,6 +1501,22 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Optional TEGroupedMLP module-name suffixes; defaults to mlp.experts.",
             )
+            parser.add_argument(
+                "--megatron-cutlass-nvfp4-moe-forward-layers",
+                nargs="+",
+                type=int,
+                default=None,
+                help=(
+                    "Global zero-based MoE decoder layers whose TEGroupedMLP forward uses "
+                    "the SGLang ModelOpt NVFP4 cutlass pertoken kernels after DeepEP dispatch."
+                ),
+            )
+            parser.add_argument(
+                "--megatron-cutlass-nvfp4-moe-forward-modules",
+                nargs="+",
+                default=None,
+                help="Optional TEGroupedMLP module-name suffixes for NVFP4 cutlass; defaults to mlp.experts.",
+            )
             return parser
 
         def add_mtp_training_arguments(parser):

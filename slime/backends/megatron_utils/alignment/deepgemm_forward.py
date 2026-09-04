@@ -626,8 +626,18 @@ def enable_deepgemm_forward(args, model, store_prefix: str) -> None:
         logger.debug("DeepGEMM wrapped Megatron linears: %s", ", ".join(wrapped))
 
 
-def enable_sglang_router_gemm(args, model, store_prefix: str) -> None:
-    """Use one SGLang persistent FP32 forward with Megatron GEMM backward."""
+def enable_sglang_router_gemm(
+    args,
+    model,
+    store_prefix: str,
+    selected_layers: Iterable | None = None,
+) -> None:
+    """Use one SGLang persistent FP32 forward with Megatron GEMM backward.
+
+    ``selected_layers`` overrides ``--megatron-deepgemm-moe-forward-layers`` so
+    NVFP4 cutlass alignment can reuse this installer with
+    ``--megatron-cutlass-nvfp4-moe-forward-layers``.
+    """
 
     del store_prefix
     saved_rollout_replay = bool(
@@ -639,10 +649,9 @@ def enable_sglang_router_gemm(args, model, store_prefix: str) -> None:
             "--sglang-enable-fp32-moe-router so Megatron and SGLang "
             "use the same FP32 router forward"
         )
-    target_layers = _as_set(
-        getattr(args, "megatron_deepgemm_moe_forward_layers", None),
-        (),
-    )
+    if selected_layers is None:
+        selected_layers = getattr(args, "megatron_deepgemm_moe_forward_layers", None)
+    target_layers = _as_set(selected_layers, ())
     if not target_layers:
         return
 

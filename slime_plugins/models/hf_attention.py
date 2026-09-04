@@ -95,6 +95,8 @@ class HuggingfaceAttention(MegatronModule, ABC):
         rotary_pos_cos: torch.Tensor | None = None,
         rotary_pos_sin: torch.Tensor | None = None,
         rotary_pos_cos_sin: torch.Tensor | None = None,
+        # Megatron SWA path may pass this; linear-attn / GDN layers ignore rope.
+        rotary_pos_emb_swa: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None = None,
         attention_bias: torch.Tensor | None = None,
         packed_seq_params: PackedSeqParams | None = None,
         sequence_len_offset: int | None = None,

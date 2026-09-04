@@ -242,8 +242,11 @@ class ServerGroup:
                 for key, default_val in {
                     "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
                     "SGLANG_JIT_DEEPGEMM_FAST_WARMUP": "true",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                    # SGLang 0.5.15+ gates on ENABLE (default True). Do NOT set
+                    # SGL*_DISABLE_TP_MEMORY_INBALANCE_CHECK: its deprecation
+                    # shim copies the DISABLE value into ENABLE and would flip
+                    # this back on ("true" → raise RuntimeError).
+                    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
                     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
