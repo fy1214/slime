@@ -144,12 +144,17 @@ class RolloutDataSource(DataSource):
 
         path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
+            if getattr(self.args, "deterministic_sampling_seed_mode", "group") == "sample":
+                raise FileNotFoundError(f"Sample seed mode requires the saved rollout dataset state: {path}")
             logger.info(f"Checkpoint {path} does not exist.")
             return
 
         logger.info(f"load metadata from {path}")
         logger.info(f"load metadata: {self.metadata}")
         state_dict = torch.load(path)
+        if getattr(self.args, "deterministic_sampling_seed_mode", "group") == "sample":
+            if "sample_index" not in state_dict:
+                raise ValueError("Sample seed mode requires sample_index in the saved rollout dataset state")
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
