@@ -117,9 +117,9 @@ def _load_dataset_state(state, rollout_id, checkpoint):
 
 @pytest.mark.parametrize("mode", ["group", "sample"])
 def test_missing_rollout_state_fails_closed_only_in_sample_mode(tmp_path, mode):
-    state = SimpleNamespace(args=SimpleNamespace(
-        load=str(tmp_path), rollout_global_dataset=True, deterministic_sampling_seed_mode=mode
-    ))
+    state = SimpleNamespace(
+        args=SimpleNamespace(load=str(tmp_path), rollout_global_dataset=True, deterministic_sampling_seed_mode=mode)
+    )
     if mode == "sample":
         with pytest.raises(FileNotFoundError, match="saved rollout dataset state"):
             _load_dataset_state(state, 19, {})
@@ -127,14 +127,28 @@ def test_missing_rollout_state_fails_closed_only_in_sample_mode(tmp_path, mode):
         _load_dataset_state(state, 19, {})
 
 
+def test_sample_mode_allows_fresh_start_without_rollout_state(tmp_path):
+    state = SimpleNamespace(
+        args=SimpleNamespace(
+            load=str(tmp_path), rollout_global_dataset=True, deterministic_sampling_seed_mode="sample"
+        )
+    )
+    _load_dataset_state(state, -1, {})
+
+
 def test_restored_dataset_index_determines_next_request_seed(tmp_path):
     path = tmp_path / "rollout/global_dataset_state_dict_19.pt"
     path.parent.mkdir()
     path.touch()
     state = SimpleNamespace(
-        args=SimpleNamespace(load=str(tmp_path), rollout_global_dataset=True,
-                             deterministic_sampling_seed_mode="sample", rollout_shuffle=False),
-        metadata={}, dataset=None,
+        args=SimpleNamespace(
+            load=str(tmp_path),
+            rollout_global_dataset=True,
+            deterministic_sampling_seed_mode="sample",
+            rollout_shuffle=False,
+        ),
+        metadata={},
+        dataset=None,
     )
     with pytest.raises(ValueError, match="sample_index"):
         _load_dataset_state(state, 19, {})
