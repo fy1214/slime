@@ -68,6 +68,7 @@
       'cpu': True,
       'extra_pip_deps': 'transformers',
       'tests': [
+        {'test_file': 'test_deterministic_sampling_seed.py', 'num_gpus': 0},
         {'test_file': 'test_residual_checkpoint.py', 'num_gpus': 0},
         {'test_file': 'test_megatron_argument_validation.py', 'num_gpus': 0},
         {'test_file': 'test_deep_ep_tms_patch.py', 'num_gpus': 0},
