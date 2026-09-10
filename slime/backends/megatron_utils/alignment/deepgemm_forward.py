@@ -716,6 +716,12 @@ def enable_sglang_global_batch_invariant_ops() -> None:
     if not is_batch_invariant_mode_enabled():
         raise RuntimeError("SGLang global batch-invariant mode did not enable")
 
+    from slime.backends.megatron_utils.alignment.residual_checkpoint import (
+        enable_exact_residual_checkpointing,
+    )
+
+    enable_exact_residual_checkpointing()
+
 
 def _sglang_batch_invariant_rmsnorm(
     value: torch.Tensor,
