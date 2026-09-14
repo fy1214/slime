@@ -2589,7 +2589,51 @@ def _validate_and_order_route_preserving_outputs(
 
 
 
+class _SGLangSoftmaxTopK(torch.autograd.Function):
+    """Keep the inference kernel's exact forward, with selected-softmax VJP.
+
+    Top-k indices are locally constant, but the selected probabilities are not.
+    The inference-only Triton kernel does not register autograd operations.
+    """
+
+    @staticmethod
+    def forward(ctx, logits, topk, scaling_factor):
+        probs, routing_map = _sglang_unbiased_softmax_topk_routing_forward(
+            logits, topk, scaling_factor
+        )
+        ctx.scale = 1.0 if scaling_factor is None else float(scaling_factor)
+        ctx.topk = topk
+        ctx.save_for_backward(probs)
+        ctx.mark_non_differentiable(routing_map)
+        return probs, routing_map
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_probs, grad_map):
+        (probs,) = ctx.saved_tensors
+        if grad_probs is None:
+            return None, None, None
+        # Renormalized top-1 is constant. Avoid a spurious gradient from the
+        # inference kernel's one-ULP normalization roundoff.
+        if ctx.scale == 0.0 or ctx.topk == 1:
+            return torch.zeros_like(probs), None, None
+        p, g = probs.float(), grad_probs.float()
+        grad_logits = p * (g - (p * g).sum(dim=-1, keepdim=True) / ctx.scale)
+        return grad_logits.to(probs.dtype), None, None
+
+
 def _sglang_unbiased_softmax_topk_routing(
+    logits: torch.Tensor,
+    topk: int,
+    scaling_factor: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """SGLang-exact forward with differentiable selected-expert probabilities."""
+    if torch.is_grad_enabled() and logits.requires_grad:
+        return _SGLangSoftmaxTopK.apply(logits, topk, scaling_factor)
+    return _sglang_unbiased_softmax_topk_routing_forward(logits, topk, scaling_factor)
+
+
+def _sglang_unbiased_softmax_topk_routing_forward(
     logits: torch.Tensor,
     topk: int,
     scaling_factor: float | None = None,
