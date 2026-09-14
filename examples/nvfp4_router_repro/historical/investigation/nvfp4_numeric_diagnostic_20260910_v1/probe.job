@@ -1,0 +1,26 @@
+#!/bin/bash
+# Single-process diagnostic derived from successful 2775669/2775742 srun harness.
+# NVFP4 container, source mount and prep match the active formal NVFP4 chain.
+#SBATCH --account=general_sa
+#SBATCH --partition=batch,36x2-a01r,tcpo
+#SBATCH --job-name=general_sa-infix:nvfp4-numeric-0910-v1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --exclusive
+#SBATCH --time=01:00:00
+#SBATCH --output=/lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/nvfp4_numeric_diagnostic_20260910_v1/%j.out
+#SBATCH --error=/lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/nvfp4_numeric_diagnostic_20260910_v1/%j.err
+set -euo pipefail
+DIAG=/lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/nvfp4_numeric_diagnostic_20260910_v1
+SNAP=/lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/determinism_initial_gap_20260909/seed_formal_v2/nvfp4
+export NVIDIA_DRIVER_CAPABILITIES=compute,utility NVIDIA_VISIBLE_DEVICES=all
+export DIAG_PHASE="${1:-operator}"
+srun --container-image=/lustre/fsw/general_sa/shuazhang/images/slime-nvfp4-det-gb200-20260905-v6.sqsh \
+ --container-mounts="/lustre/fsw/general_sa/shuazhang:/lustre/fsw/general_sa/shuazhang,$SNAP/slime_nvfp4:/root/slime" \
+ --no-container-entrypoint bash -c '
+ export MODE=nvfp4 EXP=nvfp4_numeric_diagnostic_0910_v1 WANDB_MODE=disabled
+ source /lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/determinism_initial_gap_20260909/seed_formal_v2/nvfp4/jobs/nvfp4_prep_env.sh
+ export CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 MAX_JOBS=1
+ export CUDA_LAUNCH_BLOCKING=1
+ exec python3 /lustre/fsw/general_sa/shuazhang/python_space/verl_for_nvfp4_20251031/investigation/nvfp4_numeric_diagnostic_20260910_v1/diagnose.py --phase "$DIAG_PHASE"'

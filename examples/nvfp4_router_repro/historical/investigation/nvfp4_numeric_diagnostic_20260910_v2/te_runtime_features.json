@@ -1,0 +1,592 @@
+[
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 234,
+    "text": "            `LayerNormLinear (FP8 output) -> FP8 DPA -> Linear`.\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n            Backward precision mode. Delayed scaling only supports None.\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 259,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 264,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n        assert ("
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 267,
+    "text": "        assert (\n            self.backward_override is None\n        ), \"Delayed scaling only supports backward_override=None.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 268,
+    "text": "            self.backward_override is None\n        ), \"Delayed scaling only supports backward_override=None.\"\n\n    def _make_repr(self) -> str:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 279,
+    "text": "            f\"fp8_mha={self.fp8_mha}, \"\n            f\"backward_override={self.backward_override}\"\n        )\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 293,
+    "text": "                pass.\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n            Backward precision mode. None does not modify backward behavior,\n            `high_precision` keeps original high-precision operands for backward,"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 310,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 315,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 330,
+    "text": "            f\"fp8_mha={self.fp8_mha}, \"\n            f\"backward_override={self.backward_override}\"\n        )\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 357,
+    "text": "                pass.\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n            Backward precision mode. None does not modify backward behavior,\n            `high_precision` keeps original high-precision operands for backward,"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 368,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 373,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 381,
+    "text": "            f\"format={str(self.fp8_format).split('.')[1]}, \"\n            f\"backward_override={self.backward_override}\"\n        )\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 410,
+    "text": "                pass.\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n            Backward precision mode. None does not modify backward behavior,\n            `high_precision` keeps original high-precision operands for backward,"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 431,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 454,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 472,
+    "text": "            f\"fp8_mha={self.fp8_mha}, \"\n            f\"backward_override={self.backward_override}\"\n        )\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 525,
+    "text": "             as a vector with one FP32 value per tensor row.\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n            Backward precision mode. None does not modify backward behavior,\n            `high_precision` keeps original high-precision operands for backward,"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 546,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 552,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 581,
+    "text": "            f\"fp8_mha={self.fp8_mha}, \"\n            f\"backward_override={self.backward_override}, \"\n            f\"row_scaled_activation={self.row_scaled_activation}, \"\n            f\"fp4_quant_fwd_inp={self.fp4_quant_fwd_inp}, \""
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 628,
+    "text": "\n    backward_override : {None, 'high_precision', 'dequantized'}, default = None\n        Backward precision mode. None does not modify backward behavior,\n        `high_precision` keeps original high-precision operands for backward,"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 644,
+    "text": "    fp8_mha: bool = False\n    backward_override: Optional[str] = os.getenv(\"NVTE_BACKWARD_OVERRIDE\", None)\n\n    def __post_init__(self) -> None:"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 648,
+    "text": "        assert (\n            self.backward_override in _BACKWARD_OVERRIDES\n        ), \"NVTE_BACKWARD_OVERRIDE must be unset or one of: 'high_precision', 'dequantized'.\"\n"
+  },
+  {
+    "path": "common/recipe/__init__.py",
+    "line": 655,
+    "text": "            f\"qfactory={self.qfactory}, \"\n            f\"backward_override={self.backward_override}\"\n        )"
+  },
+  {
+    "path": "pytorch/ops/fuser.py",
+    "line": 347,
+    "text": "        self.first_op_requiring_backward = 0\n        self.backward_override = None\n        self._last_amax_history_len = 0\n"
+  },
+  {
+    "path": "pytorch/ops/fuser.py",
+    "line": 424,
+    "text": "        recipe_type = type(recipe)\n        backward_override = recipe.backward_override if recipe is not None else None\n        fusion_params = (recipe_type, first_op_requiring_backward, backward_override)\n        if fusion_params != ("
+  },
+  {
+    "path": "pytorch/ops/fuser.py",
+    "line": 425,
+    "text": "        backward_override = recipe.backward_override if recipe is not None else None\n        fusion_params = (recipe_type, first_op_requiring_backward, backward_override)\n        if fusion_params != (\n            self.recipe_type,"
+  },
+  {
+    "path": "pytorch/ops/fuser.py",
+    "line": 429,
+    "text": "            self.first_op_requiring_backward,\n            self.backward_override,\n        ):\n            # Recipe type, backward override, or grad requirements have changed"
+  },
+  {
+    "path": "pytorch/ops/fuser.py",
+    "line": 465,
+    "text": "        # Save current fusion params\n        self.recipe_type, self.first_op_requiring_backward, self.backward_override = fusion_params\n\n        # Save amax history length"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 117,
+    "text": "    save_original_input: bool\n    backward_override: Optional[str]\n    custom: bool\n    debug: bool"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 185,
+    "text": "    fp8_recipe: Optional[Recipe] = None\n    backward_override: Optional[str] = None\n    is_weight_param_quantized: bool = False\n    custom: bool = False"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 282,
+    "text": "    debug = args.debug\n    backward_override = args.backward_override\n    is_fsdp2 = args.is_fsdp2\n    if backward_override == \"high_precision\":"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 284,
+    "text": "    is_fsdp2 = args.is_fsdp2\n    if backward_override == \"high_precision\":\n        save_original_input = True\n"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 338,
+    "text": "                    rowwise=True,\n                    columnwise=backward_needs_input and backward_override is None,\n                )\n                if isinstance(input_quantizer, (Float8Quantizer, Float8CurrentScalingQuantizer)):"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 383,
+    "text": "                        and not save_original_input\n                        and backward_override is None\n                    ),\n                )"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 410,
+    "text": "            columnwise_usage = is_grad_enabled and inp.requires_grad and not is_fsdp2\n            if backward_override is not None:\n                columnwise_usage = False\n            if not columnwise_usage:"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 539,
+    "text": "        ):\n            if backward_override is not None:\n                inputmat.update_usage(rowwise_usage=True, columnwise_usage=False)\n            elif ("
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 626,
+    "text": "\n    backward_override = fwd_args.backward_override\n    fp8 = fwd_args.fp8\n    fuse_wgrad_accumulation = fwd_args.fuse_wgrad_accumulation"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 649,
+    "text": "    bwd_args.fp8_recipe = FP8GlobalStateManager.get_fp8_recipe() if fp8 else None\n    bwd_args.backward_override = backward_override\n    bwd_args.is_weight_param_quantized = isinstance(weight, QuantizedTensorStorage)\n    bwd_args.custom = fwd_args.custom"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 689,
+    "text": "\n    if backward_override is not None:\n        bwd_args.fp8 = False\n        bwd_args.debug = False"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 834,
+    "text": "        # ``grad_output_preprocess`` accesses a small set of attributes\n        # (sequence_parallel, fp8, backward_override, debug, ub_overlap_ag,\n        # tp_group, ub_obj_gradout, use_bias). ``LinearBwdArgs`` exposes the\n        # same names so we can pass it directly."
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 977,
+    "text": "            weight_for_dgrad = weight_fp8\n            if bwd_args.backward_override == \"dequantized\":\n                if isinstance(weight_for_dgrad, QuantizedTensorStorage):\n                    weight_for_dgrad = weight_for_dgrad.dequantize(dtype=bwd_args.activation_dtype)"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 982,
+    "text": "                    weight_for_dgrad = cast_if_needed(weight_for_dgrad, bwd_args.activation_dtype)\n            elif bwd_args.backward_override == \"high_precision\":\n                weight_for_dgrad = saved_weight\n                if isinstance(weight_for_dgrad, QuantizedTensorStorage):"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 1305,
+    "text": "                bwd_args.reduce_and_update_bwd_fp8_tensors = _check_fp8_reduce_and_update()\n            if fwd_args.backward_override is not None:\n                bwd_args.reduce_and_update_bwd_fp8_tensors = False\n"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 1811,
+    "text": "            if self.fp8:\n                backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n            else:\n                backward_override = None"
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 1813,
+    "text": "            else:\n                backward_override = None\n            custom = is_custom(input_quantizer) or is_custom(weight_quantizer)\n            backward_input_needs_gather = ("
+  },
+  {
+    "path": "pytorch/module/linear.py",
+    "line": 1865,
+    "text": "                save_original_input=self.save_original_input,\n                backward_override=backward_override,\n                custom=custom,\n                debug=debug,"
+  },
+  {
+    "path": "pytorch/module/layernorm_mlp.py",
+    "line": 244,
+    "text": "        if fp8:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/module/layernorm_mlp.py",
+    "line": 246,
+    "text": "        else:\n            backward_override = None\n        assert backward_override is None, (\n            \"NVTE_BACKWARD_OVERRIDE=high_precision/dequantized is not implemented in LayerNormMLP.\""
+  },
+  {
+    "path": "pytorch/module/layernorm_mlp.py",
+    "line": 247,
+    "text": "            backward_override = None\n        assert backward_override is None, (\n            \"NVTE_BACKWARD_OVERRIDE=high_precision/dequantized is not implemented in LayerNormMLP.\"\n            \" Replace LayerNormMLP with LayerNormLinear + Linear to enable\""
+  },
+  {
+    "path": "pytorch/module/layernorm_mlp.py",
+    "line": 833,
+    "text": "            ctx.fp8_recipe = FP8GlobalStateManager.get_fp8_recipe() if fp8 else None\n            ctx.backward_override = backward_override\n            ctx.fc1_grad_input_quantizer = fc1_grad_input_quantizer\n            ctx.fc1_grad_weight_quantizer = fc1_grad_weight_quantizer"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 148,
+    "text": "        if fp8:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 150,
+    "text": "        else:\n            backward_override = None\n\n        # NVTX label for profiling"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 211,
+    "text": "                rowwise=True,\n                columnwise=backward_needs_input and backward_override is None,\n            )\n            if with_input_all_gather and input_quantizer.supports_only_rowwise_all_gather():"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 225,
+    "text": "            and not return_layernorm_output_gathered\n            and backward_override is None\n            and not custom  # TODO(negvet): and not FP8GlobalStateManager.get_fp8_recipe().custom()\n        )"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 249,
+    "text": "            ln_out_return = ln_out\n        ln_out_hp = ln_out if backward_override == \"high_precision\" else None\n\n        # ------------------------------------------------------"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 317,
+    "text": "                    rowwise=True,\n                    columnwise=is_grad_enabled and not is_fsdp2 and backward_override is None,\n                )\n"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 434,
+    "text": "            ln_out_to_save = ln_out\n            if backward_override == \"high_precision\":\n                ln_out_to_save = ln_out_hp\n            ctx.weight_quantizer = weight_quantizer"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 442,
+    "text": "            # Input with column-wise usage is needed for wgrad GEMM.\n            if backward_needs_input and backward_override is None:\n                if isinstance(ln_out, QuantizedTensorStorage):\n                    # For sequence parallel in vanilla FP8, rowwise data is"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 526,
+    "text": "            ctx.fp8_recipe = FP8GlobalStateManager.get_fp8_recipe() if fp8 else None\n            ctx.backward_override = backward_override\n            ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation\n            ctx.cpu_offloading = cpu_offloading"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 559,
+    "text": "            # backward overrides\n            if backward_override is not None:\n                ctx.fp8 = False\n                ctx.debug = False"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 713,
+    "text": "            ln_out_total_work = None\n            if ctx.backward_override == \"dequantized\":\n                if isinstance(ln_out, QuantizedTensorStorage):\n                    ln_out = ln_out.dequantize(dtype=ctx.activation_dtype)"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 803,
+    "text": "            weight_for_dgrad = weight\n            if ctx.backward_override == \"dequantized\":\n                if isinstance(weight_for_dgrad, QuantizedTensorStorage):\n                    weight_for_dgrad = weight_for_dgrad.dequantize(dtype=ctx.activation_dtype)"
+  },
+  {
+    "path": "pytorch/module/layernorm_linear.py",
+    "line": 808,
+    "text": "                    weight_for_dgrad = cast_if_needed(weight_for_dgrad, ctx.activation_dtype)\n            elif ctx.backward_override == \"high_precision\":\n                weight_for_dgrad = saved_weight\n                if isinstance(weight_for_dgrad, QuantizedTensorStorage):"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 105,
+    "text": "        if fp8:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 107,
+    "text": "        else:\n            backward_override = None\n        if backward_override == \"high_precision\":\n            save_original_input = True"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 108,
+    "text": "            backward_override = None\n        if backward_override == \"high_precision\":\n            save_original_input = True\n"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 139,
+    "text": "                        and not save_original_input\n                        and backward_override is None\n                    ),\n                )"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 143,
+    "text": "            columnwise_usage = is_grad_enabled and inp.requires_grad\n            if backward_override is not None:\n                columnwise_usage = False\n            if not columnwise_usage:"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 270,
+    "text": "                        if isinstance(inputmat, QuantizedTensorStorage):\n                            if backward_override is not None:\n                                # In dequantized mode we should dequantize directly from\n                                # fprop quantized layouts without retargeting usage."
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 317,
+    "text": "            ctx.fp8_recipe = FP8GlobalStateManager.get_fp8_recipe() if fp8 else None\n            ctx.backward_override = backward_override\n            ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation\n            ctx.cpu_offloading = cpu_offloading"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 337,
+    "text": "            # backward overrides\n            if backward_override is not None:\n                ctx.fp8 = False\n                ctx.debug = False"
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 452,
+    "text": "                weights_for_dgrad = weights\n                if ctx.backward_override == \"dequantized\":\n                    weights_for_dgrad = [\n                        ("
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 461,
+    "text": "                    ]\n                elif ctx.backward_override == \"high_precision\":\n                    weights_for_dgrad = [\n                        ("
+  },
+  {
+    "path": "pytorch/module/grouped_linear.py",
+    "line": 534,
+    "text": "                        )\n                elif ctx.backward_override == \"dequantized\":\n                    inputmats_dequant = []\n                    for inputmat in inputmats:"
+  },
+  {
+    "path": "pytorch/module/base.py",
+    "line": 1517,
+    "text": "        gather_grad_output = row_parallel_mode and ctx.sequence_parallel\n        use_fp8_bwd = ctx.fp8 and ctx.backward_override is None\n\n        # Non-FP8 case: bgrad is fused with wgrad for this case."
+  },
+  {
+    "path": "pytorch/ops/fused/userbuffers_forward_linear.py",
+    "line": 396,
+    "text": "        if recipe is not None:\n            backward_override = recipe.backward_override\n        elif FP8GlobalStateManager.is_fp8_enabled():\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override"
+  },
+  {
+    "path": "pytorch/ops/fused/userbuffers_forward_linear.py",
+    "line": 398,
+    "text": "        elif FP8GlobalStateManager.is_fp8_enabled():\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/ops/fused/userbuffers_forward_linear.py",
+    "line": 400,
+    "text": "        else:\n            backward_override = None\n        if backward_override is not None:\n            return ops"
+  },
+  {
+    "path": "pytorch/ops/fused/userbuffers_forward_linear.py",
+    "line": 401,
+    "text": "            backward_override = None\n        if backward_override is not None:\n            return ops\n"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 69,
+    "text": "        if with_quantized_compute:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 71,
+    "text": "        else:\n            backward_override = None\n\n        # Get extra input tensor for add operation"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 94,
+    "text": "            with_quantized_compute=with_quantized_compute,\n            backward_override=backward_override,\n            input_quantizer=input_quantizer,\n            weight_quantizer=weight_quantizer,"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 104,
+    "text": "        if linear_op_ctx.requires_grad:\n            if backward_override == \"high_precision\":\n                saved_input = input_ if weight_requires_grad else None\n                saved_weight = linear_op.weight if input_requires_grad else None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 114,
+    "text": "            linear_op_ctx.with_quantized_compute = (\n                with_quantized_compute and backward_override is None\n            )\n            linear_op_ctx.backward_override = backward_override"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_scale_add.py",
+    "line": 116,
+    "text": "            )\n            linear_op_ctx.backward_override = backward_override\n            linear_op_ctx.input_quantizer = input_quantizer\n            linear_op_ctx.weight_quantizer = weight_quantizer"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 90,
+    "text": "        if with_quantized_compute:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 92,
+    "text": "        else:\n            backward_override = None\n\n        # Get autocast dtype if needed"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 113,
+    "text": "            with_quantized_compute=with_quantized_compute,\n            backward_override=backward_override,\n            input_quantizer=input_quantizer,\n            weight_quantizer=weight_quantizer,"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 123,
+    "text": "        if linear_op_ctx.requires_grad:\n            if backward_override == \"high_precision\":\n                saved_input = input_ if weight_requires_grad else None\n                saved_weight = linear_op.weight if input_requires_grad else None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 133,
+    "text": "            linear_op_ctx.with_quantized_compute = (\n                with_quantized_compute and backward_override is None\n            )\n            linear_op_ctx.backward_override = backward_override"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 135,
+    "text": "            )\n            linear_op_ctx.backward_override = backward_override\n            linear_op_ctx.input_quantizer = input_quantizer\n            linear_op_ctx.weight_quantizer = weight_quantizer"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_add.py",
+    "line": 145,
+    "text": "            bias_op_ctx.grad_input_quantizer = (\n                None if backward_override is not None else linear_op.get_grad_output_quantizer()\n            )\n"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 96,
+    "text": "        if with_quantized_compute:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 98,
+    "text": "        else:\n            backward_override = None\n\n        # Get autocast dtype if needed"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 116,
+    "text": "            with_quantized_compute=with_quantized_compute,\n            backward_override=backward_override,\n            input_quantizer=input_quantizer,\n            weight_quantizer=weight_quantizer,"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 126,
+    "text": "        if linear_op_ctx.requires_grad:\n            if backward_override == \"high_precision\":\n                saved_input = input_ if weight_requires_grad else None\n                saved_weight = linear_op.weight if input_requires_grad else None"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 136,
+    "text": "            linear_op_ctx.with_quantized_compute = (\n                with_quantized_compute and backward_override is None\n            )\n            linear_op_ctx.backward_override = backward_override"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 138,
+    "text": "            )\n            linear_op_ctx.backward_override = backward_override\n            linear_op_ctx.input_quantizer = input_quantizer\n            linear_op_ctx.weight_quantizer = weight_quantizer"
+  },
+  {
+    "path": "pytorch/ops/fused/forward_linear_bias_activation.py",
+    "line": 148,
+    "text": "            bias_op_ctx.grad_input_quantizer = linear_op.get_grad_output_quantizer()\n            if backward_override is not None:\n                bias_op_ctx.grad_input_quantizer = None\n"
+  },
+  {
+    "path": "pytorch/ops/fused/backward_activation_bias.py",
+    "line": 109,
+    "text": "        # high_precision/dequantized backward overrides should use unfused backward ops.\n        if recipe is None or recipe.backward_override is not None:\n            return ops\n"
+  },
+  {
+    "path": "pytorch/ops/basic/quantize.py",
+    "line": 65,
+    "text": "            recipe = FP8GlobalStateManager.get_fp8_recipe()\n            quantize_backward = quantize_backward and recipe.backward_override is None\n\n        # Quantize if needed"
+  },
+  {
+    "path": "pytorch/ops/basic/bias.py",
+    "line": 130,
+    "text": "                fp8_recipe = FP8GlobalStateManager.get_fp8_recipe()\n                if fp8_recipe.backward_override is not None:\n                    ctx.grad_input_quantizer = None\n"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 354,
+    "text": "            columnwise_usage = weight_requires_grad\n            if FP8GlobalStateManager.get_fp8_recipe().backward_override is not None:\n                columnwise_usage = False\n            input_quantizer = self.get_quantizer(\"forward\", 0)"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 450,
+    "text": "        with_quantized_compute: bool = False,\n        backward_override: Optional[str] = None,\n        input_quantizer: Optional[Quantizer] = None,\n        weight_quantizer: Optional[Quantizer] = None,"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 490,
+    "text": "            Whether to perform compute with quantized data.\n        backward_override: {`None`, `\"high_precision\"`, `\"dequantized\"`}, default = `None`\n            Backward-override policy for quantized compute.\n        input_quantizer: Quantizer, optional"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 545,
+    "text": "                rowwise=True,\n                columnwise=weight_requires_grad and backward_override is None,\n            )\n            if with_x_all_gather:"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 580,
+    "text": "                rowwise=True,\n                columnwise=input_requires_grad and backward_override is None,\n            )\n            w = weight_quantizer(w)"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 654,
+    "text": "                and is_quantized_tensor(w)\n                and backward_override is None\n            ):\n                w.update_usage(rowwise_usage=False, columnwise_usage=True)"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 665,
+    "text": "                and is_quantized_tensor(x_local)\n                and backward_override is None\n            ):\n                if not (isinstance(x_local, Float8TensorStorage) and with_x_all_gather):"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1017,
+    "text": "        if with_quantized_compute:\n            backward_override = FP8GlobalStateManager.get_fp8_recipe().backward_override\n        else:\n            backward_override = None"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1019,
+    "text": "        else:\n            backward_override = None\n\n        # Get autocast dtype if needed"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1036,
+    "text": "            with_quantized_compute=with_quantized_compute,\n            backward_override=backward_override,\n            input_quantizer=input_quantizer,\n            weight_quantizer=weight_quantizer,"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1046,
+    "text": "        if ctx.requires_grad:\n            if backward_override == \"high_precision\":\n                saved_input = input_ if weight_requires_grad else None\n                saved_weight = self.weight if input_requires_grad else None"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1055,
+    "text": "            ctx.save_for_backward(saved_input, saved_weight)\n            ctx.with_quantized_compute = with_quantized_compute and backward_override is None\n            ctx.backward_override = backward_override\n            ctx.input_quantizer = input_quantizer"
+  },
+  {
+    "path": "pytorch/ops/basic/basic_linear.py",
+    "line": 1056,
+    "text": "            ctx.with_quantized_compute = with_quantized_compute and backward_override is None\n            ctx.backward_override = backward_override\n            ctx.input_quantizer = input_quantizer\n            ctx.weight_quantizer = weight_quantizer"
+  }
+]
