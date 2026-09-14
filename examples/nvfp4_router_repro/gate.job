@@ -1,0 +1,19 @@
+#!/bin/bash
+# Single-process GPU gate. Supply the validated cluster allocation at submission.
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:20:00
+set -euo pipefail
+: "${ROUTER_CHECKOUT:?absolute shared-FS checkout}"
+: "${ROUTER_IMAGE:?validated Slime container image}"
+: "${ROUTER_MOUNTS:?validated mounts including checkout and output}"
+: "${ROUTER_PREP:?container-visible baseline prep script}"
+: "${ROUTER_RESULT:?new container-visible result path}"
+[ ! -e "$ROUTER_RESULT" ] || { echo 'Result collision' >&2; exit 2; }
+srun --container-image="$ROUTER_IMAGE" --container-mounts="$ROUTER_MOUNTS" \
+  --no-container-entrypoint bash -ec '
+    source "$ROUTER_PREP"
+    export CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 MAX_JOBS=1
+    exec python3 "$ROUTER_CHECKOUT/examples/nvfp4_router_repro/test_router.py" "$ROUTER_CHECKOUT" "$ROUTER_RESULT"
+  '
