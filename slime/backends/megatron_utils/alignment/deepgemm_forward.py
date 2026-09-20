@@ -759,18 +759,20 @@ def enable_sglang_layer0_input_rmsnorm(
     model,
     store_prefix: str,
 ) -> None:
-    """Match standalone replay's independent RMSNorm at every PP boundary.
+    """Wrap every local ``input_layernorm`` with SGLang forward + analytic backward.
 
-    Later Transformer layers consume the explicit FP32 residual sum and use
-    Megatron's SGLang-aligned fused residual/RMSNorm path.  The first local
-    layer on each pipeline stage has no local preceding residual sum, so it
-    still calls its standalone TE RMSNorm module.  The standalone accuracy
-    replay replaces all such modules with SGLang's batch-invariant RMSNorm; do
-    the same here.  Checking for global layer zero is insufficient with PP>1:
-    stage 1 in the canonical PP8 layout starts at global layer 2.
+    Layer 0 / PP-stage boundaries have no local FP32 residual sum and must call
+    the standalone RMSNorm module.  Later layers normally consume
+    ``hidden_states._sglang_residual_sum_fp32`` via Megatron's fused residual
+    path, but activation-checkpoint ``detach_variable`` drops that attribute on
+    recompute.  The fallback then hits raw ``rms_norm_batch_invariant``, which
+    has no autograd — silently zeroing input/weight grads while training
+    continues.
 
-    Training uses an analytic RMSNorm backward, so the original TE forward is
-    not evaluated a second time.
+    Mirror ``enable_sglang_final_rmsnorm``: visible forward may use the FP32
+    residual (tensor attr, else previous layer module storage), while backward
+    always flows through the bf16 boundary tensor so checkpoint topology stays
+    valid.
     """
     del args, store_prefix
     if os.environ.get("MEGATRON_USE_SGLANG_FUSED_RESIDUAL_RMS", "0") != "1":
@@ -797,40 +799,48 @@ def enable_sglang_layer0_input_rmsnorm(
         if not local_layers:
             continue
 
-        # Each model chunk owns one contiguous local decoder.  Its first layer
-        # is the independent RMS boundary even when its global layer number is
-        # greater than one because it follows a pipeline send/recv.
-        _, layer_name, layer = min(local_layers, key=lambda item: item[0])
-        module = getattr(layer, "input_layernorm", None)
-        if module is None or getattr(module, "_slime_sglang_pipeline_input_rmsnorm_wrapped", False):
-            continue
-        if not hasattr(module, "weight") or not hasattr(module, "eps"):
-            continue  # skip: missing weight/eps (offloaded?)
+        local_layers.sort(key=lambda item: item[0])
+        layer_by_idx = {idx: layer for idx, _, layer in local_layers}
 
-        original_forward = module.forward
+        for layer_idx, layer_name, layer in local_layers:
+            module = getattr(layer, "input_layernorm", None)
+            if module is None or getattr(module, "_slime_sglang_pipeline_input_rmsnorm_wrapped", False):
+                continue
+            if not hasattr(module, "weight") or not hasattr(module, "eps"):
+                continue  # skip: missing weight/eps (offloaded?)
 
-        def forward(
-            patched_module: torch.nn.Module,
-            value: torch.Tensor,
-        ) -> torch.Tensor:
-            return _SGLangRMSNormWithAnalyticBackward.apply(
-                value.detach(),
-                value,
-                patched_module.weight,
-                float(patched_module.eps),
-                False,
-                value.dtype,
-            )
+            original_forward = module.forward
+            prev_layer = layer_by_idx.get(layer_idx - 1)
 
-        module.forward = types.MethodType(forward, module)
-        module._slime_sglang_pipeline_input_rmsnorm_wrapped = True
-        module._slime_sglang_pipeline_input_rmsnorm_original = original_forward
-        patched.append(f"{layer_name}.input_layernorm")
+            def forward(
+                patched_module: torch.nn.Module,
+                value: torch.Tensor,
+                *,
+                prev_layer=prev_layer,
+            ) -> torch.Tensor:
+                exact_residual_sum = getattr(value, "_sglang_residual_sum_fp32", None)
+                if exact_residual_sum is None and prev_layer is not None:
+                    exact_residual_sum = getattr(prev_layer, "_sglang_residual_sum_fp32", None)
+
+                visible_input = value if exact_residual_sum is None else exact_residual_sum
+                return _SGLangRMSNormWithAnalyticBackward.apply(
+                    visible_input.detach(),
+                    value,
+                    patched_module.weight,
+                    float(patched_module.eps),
+                    exact_residual_sum is not None,
+                    value.dtype,
+                )
+
+            module.forward = types.MethodType(forward, module)
+            module._slime_sglang_pipeline_input_rmsnorm_wrapped = True
+            module._slime_sglang_pipeline_input_rmsnorm_original = original_forward
+            patched.append(f"{layer_name}.input_layernorm")
 
     if patched and _should_log_deepgemm_summary():
         logger.info(
-            "Enabled single-pass SGLang batch-invariant pipeline-stage input "
-            "RMSNorm with analytic backward on %d module(s)",
+            "Enabled SGLang input RMSNorm with analytic backward on %d module(s) "
+            "(all local layers; FP32 residual fallback for checkpoint recompute)",
             len(patched),
         )
 
