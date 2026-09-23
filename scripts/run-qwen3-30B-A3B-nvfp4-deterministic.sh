@@ -262,7 +262,7 @@ ROLLOUT_ARGS=(
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
+   --rm-type math
    --num-rollout "${NUM_ROLLOUT}"
    --rollout-batch-size "${ROLLOUT_BATCH_SIZE}"
    --n-samples-per-prompt "${N_SAMPLES_PER_PROMPT}"
@@ -400,7 +400,7 @@ MISC_ARGS=(
    --update-weight-transport nccl
    --update-weight-buffer-size 2147483648
    --no-check-for-nan-in-loss-and-grad
-   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True","CUDA_LAUNCH_BLOCKING":"1"}'
+   --train-env-vars "{\"PYTORCH_CUDA_ALLOC_CONF\":\"expandable_segments:True\",\"CUDA_LAUNCH_BLOCKING\":\"${ALIGNED_LAUNCH_BLOCKING:-0}\"}"
    --custom-megatron-before-log-prob-hook-path
      slime.backends.megatron_utils.alignment.nvfp4_alignment.enable_nvfp4_alignment_all_forward
    --custom-megatron-before-train-step-hook-path
@@ -492,4 +492,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
-   ${CI_ARGS[@]}
+   ${CI_ARGS[@]} \
+   ${EXTRA_TRAIN_ARGS}

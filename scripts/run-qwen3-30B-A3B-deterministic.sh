@@ -341,7 +341,7 @@ MISC_ARGS=(
    --update-weight-transport nccl
    --update-weight-buffer-size 2147483648
    --no-check-for-nan-in-loss-and-grad
-   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True","CUDA_LAUNCH_BLOCKING":"1"}'
+   --train-env-vars "{\"PYTORCH_CUDA_ALLOC_CONF\":\"${SLIME_ALLOC_CONF:-expandable_segments:True}\",\"CUDA_LAUNCH_BLOCKING\":\"${ALIGNED_LAUNCH_BLOCKING:-0}\"}"
    --custom-megatron-before-log-prob-hook-path
      slime.backends.megatron_utils.alignment.deepgemm_forward.enable_deepgemm_all_forward
    --custom-megatron-before-train-step-hook-path

@@ -24,6 +24,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 from megatron.core import parallel_state
 
 from slime.backends.megatron_utils.alignment.deepgemm_forward import (
@@ -2435,160 +2436,6 @@ def _compact_route_preserving_metadata_inputs(
     return compact_indices, compact_weights, fingerprints, output_index, all_routes_valid
 
 
-def _deepep_route_handle_received_rows(handle: tuple) -> int:
-    """Return the received route count encoded by a normal DeepEP handle."""
-    if not isinstance(handle, tuple):
-        raise TypeError(f"DeepEP route handle must be a tuple, got {type(handle).__name__}")
-    if len(handle) == 6:
-        # Intranode: (..., recv_src_idx, ...).
-        received_metadata = handle[3]
-    elif len(handle) == 10:
-        # Internode: (..., recv_src_meta, ...).
-        received_metadata = handle[7]
-    else:
-        raise ValueError(f"Unsupported normal DeepEP route handle length: {len(handle)}")
-    if not isinstance(received_metadata, torch.Tensor) or received_metadata.ndim < 1:
-        raise TypeError("DeepEP route handle has invalid received-source metadata")
-    return received_metadata.shape[0]
-
-
-def _dispatch_route_preserving_deepep_metadata(
-    manager: object,
-    hidden_states: torch.Tensor,
-    topk_indices: torch.Tensor,
-    topk_weights: torch.Tensor,
-    *,
-    assume_all_routes_valid: bool = False,
-) -> tuple[tuple, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, bool]:
-    """Create a route-level normal DeepEP handle with tiny payloads.
-
-    This is intentionally a correctness prototype.  Once validated, the same
-    route counts/source metadata are to be emitted by the primary aligned
-    dispatch so this extra metadata-only communication disappears.
-    """
-    (
-        route_indices,
-        route_weights,
-        route_fingerprints,
-        source_output_index,
-        all_routes_valid,
-    ) = _compact_route_preserving_metadata_inputs(
-        hidden_states,
-        topk_indices,
-        topk_weights,
-        assume_all_routes_valid=assume_all_routes_valid,
-    )
-    from megatron.core.transformer.moe.fused_a2a import get_buffer, get_hidden_bytes
-
-    group = manager.group
-    buffer = get_buffer(group, get_hidden_bytes(route_fingerprints))
-    (
-        num_tokens_per_rank,
-        num_tokens_per_rdma_rank,
-        num_tokens_per_expert,
-        is_token_in_rank,
-        layout_event,
-    ) = buffer.get_dispatch_layout(
-        route_indices,
-        int(manager.num_experts),
-        async_finish=False,
-        allocate_on_comm_stream=False,
-    )
-    (
-        recv_fingerprints,
-        recv_route_indices,
-        recv_route_weights,
-        _,
-        route_handle,
-        _,
-    ) = buffer.dispatch(
-        route_fingerprints,
-        topk_idx=route_indices,
-        topk_weights=route_weights,
-        num_tokens_per_rank=num_tokens_per_rank,
-        num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
-        is_token_in_rank=is_token_in_rank,
-        num_tokens_per_expert=num_tokens_per_expert,
-        previous_event=layout_event,
-        async_finish=False,
-        allocate_on_comm_stream=False,
-    )
-    if recv_route_indices is None or recv_route_weights is None:
-        raise RuntimeError("Route-preserving DeepEP metadata dispatch dropped top-k metadata")
-    return (
-        route_handle,
-        recv_fingerprints,
-        recv_route_indices.reshape(-1),
-        recv_route_weights.reshape(-1),
-        source_output_index,
-        all_routes_valid,
-    )
-
-
-def _validate_and_order_route_preserving_outputs(
-    expert_outputs: torch.Tensor,
-    received_tokens: torch.Tensor,
-    received_topk_indices: torch.Tensor,
-    received_topk_weights: torch.Tensor,
-    output_index: torch.Tensor,
-    route_fingerprints: torch.Tensor,
-    route_indices: torch.Tensor,
-    route_weights: torch.Tensor,
-    *,
-    order_outputs: bool = True,
-    route_positions: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Return expert outputs in the route handle's receive order.
-
-    DeepEP currently produces the same source-token/slot order for the primary
-    rank-deduplicated dispatch and the virtual-token metadata dispatch.  Do not
-    merely assume that invariant: validate expert ID, exact FP32 weight and an
-    sixteen-BF16 source fingerprint before using the route handle.
-    """
-    if expert_outputs.ndim != 2 or received_tokens.ndim != 2:
-        raise ValueError("Route-preserving DeepEP expects 2D hidden tensors")
-    if received_topk_indices.shape != received_topk_weights.shape:
-        raise ValueError("Received DeepEP IDs and weights do not align")
-    if output_index.shape != received_topk_indices.shape:
-        raise ValueError("Received DeepEP route mapping does not align")
-
-    positions = torch.nonzero(output_index >= 0, as_tuple=False) if route_positions is None else route_positions
-    if positions.shape[0] != route_indices.numel():
-        raise RuntimeError(
-            "Route-preserving DeepEP route count mismatch: "
-            f"primary={positions.shape[0]} metadata={route_indices.numel()}"
-        )
-    token_rows = positions[:, 0]
-    topk_slots = positions[:, 1]
-    expected_indices = received_topk_indices[token_rows, topk_slots].reshape(-1)
-    expected_weights = received_topk_weights[token_rows, topk_slots].reshape(-1)
-    expected_fingerprints = received_tokens.narrow(1, 0, 16).index_select(0, token_rows)
-    if route_fingerprints.shape != expected_fingerprints.shape:
-        raise RuntimeError(
-            "Route-preserving DeepEP fingerprint shape mismatch: "
-            f"{tuple(route_fingerprints.shape)} != {tuple(expected_fingerprints.shape)}"
-        )
-
-    torch._assert_async(
-        torch.all(expected_indices == route_indices.to(dtype=expected_indices.dtype)),
-        "Route-preserving DeepEP metadata changed local expert order",
-    )
-    torch._assert_async(
-        torch.all(expected_weights == route_weights.to(dtype=expected_weights.dtype)),
-        "Route-preserving DeepEP metadata changed route probability order",
-    )
-    torch._assert_async(
-        torch.all(expected_fingerprints == route_fingerprints),
-        "Route-preserving DeepEP metadata changed source-token order",
-    )
-
-    if not order_outputs:
-        return expert_outputs
-    route_rows = output_index[token_rows, topk_slots].to(dtype=torch.long)
-    return expert_outputs.index_select(0, route_rows)
-
-
-
 class _SGLangSoftmaxTopK(torch.autograd.Function):
     """Keep the inference kernel's exact forward, with selected-softmax VJP.
 
@@ -2827,6 +2674,7 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
     ) -> torch.Tensor:
         if patched_manager.token_indices is None or patched_manager.token_probs is None:
             raise RuntimeError("Ordered source top-k metadata is unavailable before DeepEP dispatch")
+
         dispatched_hidden = original_dispatch(
             hidden_states,
             async_finish=async_finish,
@@ -2837,30 +2685,21 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
         source_topk_indices = patched_manager.token_indices
         source_topk_weights = patched_manager.token_probs
         source_fixed_topk_valid = bool(getattr(patched_manager, "_slime_source_fixed_topk_valid", False))
-        (
-            route_handle,
-            recv_route_fingerprints,
-            recv_route_indices,
-            recv_route_weights,
-            source_output_index,
-            source_all_routes_valid,
-        ) = _dispatch_route_preserving_deepep_metadata(
-            patched_manager,
-            hidden_states,
-            source_topk_indices,
-            source_topk_weights,
-            assume_all_routes_valid=source_fixed_topk_valid,
-        )
-        route_metadata_prevalidated = False
-        patched_manager._slime_route_handle = route_handle
-        patched_manager._slime_route_recv_fingerprints = recv_route_fingerprints
-        patched_manager._slime_route_recv_indices = recv_route_indices
-        patched_manager._slime_route_recv_weights = recv_route_weights
-        patched_manager._slime_route_metadata_prevalidated = route_metadata_prevalidated
+        # Expert outputs return via NCCL all-to-all (_nccl_route_combine),
+        # which rebuilds the SGLang c-order locally from the primary dispatch
+        # handle.  The route-preserving second DeepEP dispatch (fused route
+        # combine incl. its dispatch-by-handle backward) is intentionally
+        # removed: its NVSHMEM flag/slot protocol races under unserialized
+        # kernel launches and intermittently drops recv rows, which was the
+        # root cause of silent per-round ref_log_probs NaN.
         patched_manager._slime_route_source_topk_indices = source_topk_indices
         patched_manager._slime_route_source_topk_weights = source_topk_weights
-        patched_manager._slime_route_source_output_index = source_output_index
-        patched_manager._slime_route_source_all_valid = source_all_routes_valid
+        patched_manager._slime_route_source_output_index = torch.arange(
+            source_topk_indices.numel(),
+            device=source_topk_indices.device,
+            dtype=torch.long,
+        ).reshape_as(source_topk_indices)
+        patched_manager._slime_route_source_all_valid = source_fixed_topk_valid
         return dispatched_hidden
 
     manager.dispatch = types.MethodType(
@@ -2890,7 +2729,7 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
             topk_weights,
             patched_manager.tokens_per_expert,
             return_route_positions=True,
-            expected_route_count=_deepep_route_handle_received_rows(patched_manager._slime_route_handle),
+            expected_route_count=None,
         )
         patched_manager.hidden_shape_before_permute = hidden_states.shape
         patched_manager.dispatched_routing_map = routing_map
@@ -2898,40 +2737,14 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
         patched_manager._slime_sglang_topk_weights = topk_weights
         patched_manager._slime_sglang_output_index = output_index
         patched_manager._slime_sglang_route_positions = route_positions
+        # combine_preprocess restores (and deletes) the shared route
+        # positions before MoE combine runs; keep a private copy for the
+        # NCCL route combine.
+        patched_manager._slime_route_nccl_positions = route_positions
         patched_manager._slime_sglang_all_routes_valid = all_routes_valid
         patched_manager._slime_sglang_expert_inputs = permuted_hidden
         patched_manager._slime_sglang_expert_probs = permuted_probs
         patched_manager._slime_sglang_tokens_per_expert = patched_manager.tokens_per_expert
-        route_fingerprints = getattr(
-            patched_manager,
-            "_slime_route_recv_fingerprints",
-            None,
-        )
-        route_indices = getattr(patched_manager, "_slime_route_recv_indices", None)
-        route_weights = getattr(patched_manager, "_slime_route_recv_weights", None)
-        route_metadata_prevalidated = bool(getattr(patched_manager, "_slime_route_metadata_prevalidated", False))
-        if route_metadata_prevalidated:
-            if any(value is not None for value in (route_fingerprints, route_indices, route_weights)):
-                raise RuntimeError("Cached DeepEP route metadata retained unexpected payloads")
-        else:
-            if route_fingerprints is None or route_indices is None or route_weights is None:
-                raise RuntimeError("Route-preserving DeepEP metadata handle is unavailable")
-            _validate_and_order_route_preserving_outputs(
-                permuted_hidden,
-                hidden_states,
-                sanitized_indices,
-                topk_weights,
-                output_index,
-                route_fingerprints,
-                route_indices,
-                route_weights,
-                order_outputs=False,
-                route_positions=route_positions,
-            )
-        del patched_manager._slime_route_recv_fingerprints
-        del patched_manager._slime_route_recv_indices
-        del patched_manager._slime_route_recv_weights
-        del patched_manager._slime_route_metadata_prevalidated
         return permuted_hidden, permuted_probs
 
     def get_restored_hidden_states_by_experts(
@@ -3005,28 +2818,18 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
         output: torch.Tensor,
         shared_expert_output: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        route_handle = getattr(manager, "_slime_route_handle", None)
         source_topk_indices = getattr(manager, "_slime_route_source_topk_indices", None)
         source_topk_weights = getattr(manager, "_slime_route_source_topk_weights", None)
         source_output_index = getattr(manager, "_slime_route_source_output_index", None)
         source_all_routes_valid = getattr(manager, "_slime_route_source_all_valid", None)
         if (
-            route_handle is None
-            or source_topk_indices is None
+            source_topk_indices is None
             or source_topk_weights is None
             or source_output_index is None
             or source_all_routes_valid is None
         ):
-            raise RuntimeError("Route-preserving DeepEP combine handle is incomplete")
-        from megatron.core.transformer.moe.fused_a2a import fused_combine
-
-        combined_routes, _ = fused_combine(
-            output,
-            manager.group,
-            route_handle,
-            async_finish=True,
-            allocate_on_comm_stream=getattr(patched_mlp.token_dispatcher, "allocate_on_comm_stream", False),
-        )
+            raise RuntimeError("NCCL route combine source metadata is incomplete")
+        combined_routes = _nccl_route_combine(manager, output)
         output = _SGLangEPGatherWithBF16Backward.apply(
             combined_routes,
             source_topk_indices,
@@ -3036,7 +2839,6 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
             source_all_routes_valid,
         )
         manager.handle = None
-        del manager._slime_route_handle
         del manager._slime_route_source_topk_indices
         del manager._slime_route_source_topk_weights
         del manager._slime_route_source_output_index
@@ -3061,6 +2863,172 @@ def _patch_sglang_deepep_layer(mlp: torch.nn.Module, global_layer: int) -> bool:
     mlp._slime_sglang_deepep_alignment = True
     mlp._slime_sglang_deepep_global_layer = global_layer
     return True
+
+
+
+class _NCCLRoutCombine(torch.autograd.Function):
+    """NCCL all-to-all route-output transport with its exact inverse backward.
+
+    Forward mirrors the DeepEP route handle's ordering contract (source-rank
+    major, compact route id ``c = source_token_idx * num_slots + topk_slot``
+    minor) without running a second, racy DeepEP dispatch.  Backward is the
+    exact inverse: gather by compact id, reverse all-to-all with swapped
+    split sizes, un-permute by the saved stable sort order.  Every step is
+    deterministic (stable sort, unique-index index_copy, fixed-split a2a).
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        expert_outputs: torch.Tensor,
+        route_positions: torch.Tensor,
+        recv_src_idx: torch.Tensor,
+        rank_prefix_matrix: torch.Tensor,
+        num_slots: int,
+        group,
+        world: int,
+        rank: int,
+        source_rows: int,
+    ) -> torch.Tensor:
+        device = expert_outputs.device
+        token_rows = route_positions[:, 0].to(dtype=torch.long)
+        topk_slots = route_positions[:, 1].to(dtype=torch.long)
+
+        # Segment boundaries of each source rank inside this rank's recv
+        # stream: segment of source s starts at
+        # rank_prefix_matrix[(s-1)*world+rank].
+        total_recv = recv_src_idx.numel()
+        seg_starts = torch.zeros(world + 1, device=device, dtype=torch.long)
+        if world > 1:
+            seg_idx = (
+                torch.arange(world - 1, device=device, dtype=torch.long) * world + rank
+            )
+            seg_starts[1:world] = rank_prefix_matrix.index_select(0, seg_idx).to(dtype=torch.long)
+        seg_starts[world] = total_recv
+        dst_rank = torch.bucketize(token_rows, seg_starts[1:world], right=True)
+
+        # Compact route id of every permuted row in its owner's back-flow
+        # stream; the permuted scan order is already (destination, c) sorted,
+        # the stable sort below only re-asserts it.
+        compact_ids = recv_src_idx.index_select(0, token_rows) * num_slots + topk_slots
+        cnum_max = (recv_src_idx.max() + 1) * num_slots
+        sort_key = dst_rank * cnum_max + compact_ids
+        order = torch.argsort(sort_key, stable=True)
+        x_sorted = expert_outputs.index_select(0, order)
+        c_sorted = compact_ids.index_select(0, order)
+
+        send_counts = torch.bincount(dst_rank, minlength=world)
+        send_splits = [int(v) for v in send_counts.tolist()]
+        recv_counts = torch.empty_like(send_counts)
+        dist.all_to_all_single(recv_counts, send_counts, group=group)
+        recv_splits = [int(v) for v in recv_counts.tolist()]
+        total_return = sum(recv_splits)
+
+        recv_x = torch.empty(
+            (total_return, expert_outputs.shape[1]),
+            device=device,
+            dtype=expert_outputs.dtype,
+        )
+        dist.all_to_all_single(
+            recv_x,
+            x_sorted,
+            output_split_sizes=recv_splits,
+            input_split_sizes=send_splits,
+            group=group,
+        )
+        recv_c = torch.empty((total_return,), device=device, dtype=torch.long)
+        dist.all_to_all_single(
+            recv_c,
+            c_sorted,
+            output_split_sizes=recv_splits,
+            input_split_sizes=send_splits,
+            group=group,
+        )
+
+        combined = torch.empty(
+            (source_rows, expert_outputs.shape[1]),
+            device=device,
+            dtype=expert_outputs.dtype,
+        )
+        combined.index_copy_(0, recv_c, recv_x)
+        torch._assert_async(
+            (recv_c.sort().values == torch.arange(source_rows, device=device, dtype=torch.long)).all(),
+            "NCCL route combine coverage mismatch",
+        )
+        ctx.save_for_backward(order, recv_c)
+        ctx.send_splits = send_splits
+        ctx.recv_splits = recv_splits
+        ctx.group = group
+        ctx.expert_num_rows = expert_outputs.shape[0]
+        return combined
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        order, recv_c = ctx.saved_tensors
+        grad_recv = grad_output.index_select(0, recv_c)
+        grad_sorted = torch.empty(
+            (order.numel(), grad_output.shape[1]),
+            device=grad_output.device,
+            dtype=grad_output.dtype,
+        )
+        dist.all_to_all_single(
+            grad_sorted,
+            grad_recv,
+            output_split_sizes=ctx.send_splits,
+            input_split_sizes=ctx.recv_splits,
+            group=ctx.group,
+        )
+        grad_x = torch.empty(
+            (ctx.expert_num_rows, grad_output.shape[1]),
+            device=grad_output.device,
+            dtype=grad_output.dtype,
+        )
+        grad_x.index_copy_(0, order, grad_sorted)
+        return grad_x, None, None, None, None, None, None, None, None
+
+
+def _nccl_route_combine(
+    manager,
+    expert_outputs: torch.Tensor,
+) -> torch.Tensor:
+    """Return expert outputs to their source ranks with an NCCL all-to-all.
+
+    Replacement for the route-preserving second DeepEP dispatch whose recv
+    stream intermittently drops ~1.9% of rows when kernel launches are not
+    serialized by CUDA_LAUNCH_BLOCKING (root cause of the silent
+    ref_log_probs NaN).  NCCL all-to-all cannot lose rows: every dispatched
+    route is accounted for by construction, and any coverage violation trips
+    a loud device-side assertion instead of corrupting values.
+
+    All ordering inputs are computed locally from the *primary* dispatch
+    handle: ``recv_src_idx`` (handle[3]) gives the source-local token index
+    of each received row, and ``rank_prefix_matrix`` (handle[0]) gives each
+    source rank's segment boundaries in the receive stream.
+    """
+    route_positions = getattr(manager, "_slime_route_nccl_positions", None)
+    if route_positions is None:
+        raise RuntimeError("NCCL route combine requires saved route positions")
+    manager._slime_route_nccl_positions = None
+    handle = manager.handle
+    if not isinstance(handle, tuple) or len(handle) != 6:
+        raise RuntimeError(
+            f"NCCL route combine expects an intranode DeepEP handle, got {type(handle).__name__}"
+        )
+    source_output_index = getattr(manager, "_slime_route_source_output_index", None)
+    source_topk_indices = getattr(manager, "_slime_route_source_topk_indices", None)
+    if source_output_index is None or source_topk_indices is None:
+        raise RuntimeError("NCCL route combine requires saved source route metadata")
+    return _NCCLRoutCombine.apply(
+        expert_outputs,
+        route_positions,
+        handle[3].reshape(-1),
+        handle[0].reshape(-1),
+        source_topk_indices.shape[1],
+        manager.group,
+        dist.get_world_size(manager.group),
+        dist.get_rank(manager.group),
+        source_output_index.numel(),
+    )
 
 
 def enable_sglang_deepep_moe_alignment(
