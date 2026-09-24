@@ -43,10 +43,15 @@ logger = logging.getLogger(__name__)
 
 _BLOCK_SIZE = 128
 _GROUPED_M_ALIGNMENT = 128
-_ROUTER_PROBABILITY_CHUNK_ROWS = 1024
-_UNPAD_CHUNK_ROWS = 1024
-_BACKWARD_CHUNK_ROWS = 1024
-_SWIGLU_POINTWISE_CHUNK_ROWS = 512
+# Chunk sizes bound the transient temporaries of the pointwise/chunked loops
+# below.  They do not affect numerics: every chunk applies the same elementwise
+# math, and reductions that must keep a fixed accumulation order (grouped GEMMs,
+# probability sums) are unchanged.  The values are sized so the largest
+# transient stays well under ~100 MB per live tensor on B200-class memory.
+_ROUTER_PROBABILITY_CHUNK_ROWS = 4096
+_UNPAD_CHUNK_ROWS = 8192
+_BACKWARD_CHUNK_ROWS = 4096
+_SWIGLU_POINTWISE_CHUNK_ROWS = 4096
 _DEFAULT_EXPERTS_PER_GROUP = 4
 _DEFAULT_BACKWARD_EXPERTS_PER_GROUP = 4
 _DEFAULT_BACKWARD_MAX_PADDED_BYTES = 256 * 1024 * 1024
@@ -681,15 +686,14 @@ def _ordered_route_backward(
         # probability gradient first because it still reads the original
         # route values; only then overwrite that storage with route gradients.
         if routes_alias_values and flat_grad_weights is not None:
+            # Hoist the position/token-row tables: chunk slices are views, so
+            # the per-chunk torch.arange and integer division kernels disappear.
+            all_positions = torch.arange(num_routes, device=output_index.device, dtype=torch.long)
+            all_token_rows = torch.div(all_positions, topk, rounding_mode="floor")
             for start in range(0, num_routes, chunk_rows):
                 end = min(start + chunk_rows, num_routes)
-                flat_positions = torch.arange(
-                    start,
-                    end,
-                    device=output_index.device,
-                    dtype=torch.long,
-                )
-                token_rows = torch.div(flat_positions, topk, rounding_mode="floor")
+                flat_positions = all_positions[start:end]
+                token_rows = all_token_rows[start:end]
                 route_rows = flat_output_index[start:end].to(dtype=torch.long)
                 token_grads = grad_output.index_select(0, token_rows)
                 selected_route_values = route_values.index_select(0, route_rows)
@@ -711,15 +715,12 @@ def _ordered_route_backward(
         if (grad_routes is not None and not fused_route_grad) or (
             flat_grad_weights is not None and not routes_alias_values
         ):
+            all_positions = torch.arange(num_routes, device=output_index.device, dtype=torch.long)
+            all_token_rows = torch.div(all_positions, topk, rounding_mode="floor")
             for start in range(0, num_routes, chunk_rows):
                 end = min(start + chunk_rows, num_routes)
-                flat_positions = torch.arange(
-                    start,
-                    end,
-                    device=output_index.device,
-                    dtype=torch.long,
-                )
-                token_rows = torch.div(flat_positions, topk, rounding_mode="floor")
+                flat_positions = all_positions[start:end]
+                token_rows = all_token_rows[start:end]
                 route_rows = flat_output_index[start:end].to(dtype=torch.long)
                 token_grads = grad_output.index_select(0, token_rows)
                 weights = flat_weights[start:end]
@@ -754,18 +755,18 @@ def _ordered_route_backward(
                 flat_grad_weights.zero_()
             return
 
+        # Hoist the position/token-row tables once for both chunk loops below;
+        # per-chunk slices are views, so no per-chunk arange/div kernels remain.
+        slot_positions = torch.arange(num_slots, device=output_index.device, dtype=torch.long)
+        slot_token_rows = torch.div(
+            slot_positions,
+            output_index.shape[1],
+            rounding_mode="floor",
+        )
+
         def probability_grad_chunk(start: int, end: int) -> None:
-            flat_positions = torch.arange(
-                start,
-                end,
-                device=output_index.device,
-                dtype=torch.long,
-            )
-            token_rows = torch.div(
-                flat_positions,
-                output_index.shape[1],
-                rounding_mode="floor",
-            )
+            flat_positions = slot_positions[start:end]
+            token_rows = slot_token_rows[start:end]
             route_rows = flat_output_index[start:end].to(dtype=torch.long)
             valid_rows = route_rows >= 0
             safe_route_rows = route_rows.clamp(min=0, max=num_route_rows - 1)
@@ -784,17 +785,8 @@ def _ordered_route_backward(
 
         for start in range(0, num_slots, chunk_rows):
             end = min(start + chunk_rows, num_slots)
-            flat_positions = torch.arange(
-                start,
-                end,
-                device=output_index.device,
-                dtype=torch.long,
-            )
-            token_rows = torch.div(
-                flat_positions,
-                output_index.shape[1],
-                rounding_mode="floor",
-            )
+            flat_positions = slot_positions[start:end]
+            token_rows = slot_token_rows[start:end]
             route_rows = flat_output_index[start:end].to(dtype=torch.long)
             valid_rows = route_rows >= 0
             safe_route_rows = route_rows.clamp(min=0, max=num_route_rows - 1)
@@ -1726,20 +1718,24 @@ def _pad_expert_rows(
             )
         padded_value = output
         padded_value.zero_()
-    valid_ranges = []
-    padded_start = 0
-    for count, padded_count in zip(counts, padded_counts, strict=True):
-        if count:
-            valid_ranges.append(
-                torch.arange(
-                    padded_start,
-                    padded_start + count,
-                    device=value.device,
-                    dtype=torch.long,
-                )
-            )
-        padded_start += padded_count
-    valid_rows = torch.cat(valid_ranges)
+    # Build the source-row -> padded-row gather with a fixed, host-known shape:
+    # expert_of_row comes from searchsorted over the cumulative token counts,
+    # and each row is shifted by (padded_offset - token_offset) of its expert.
+    # This replaces one torch.arange per expert plus a torch.cat; every kernel
+    # launched here has a size known on the host, so no device sync is added.
+    # The resulting indices are exactly the concatenated per-expert ranges.
+    total_valid_rows = sum(counts)
+    if total_valid_rows == 0:
+        valid_rows = torch.empty(0, dtype=torch.long, device=value.device)
+    else:
+        counts_dev = torch.tensor(counts, dtype=torch.long, device=value.device)
+        padded_dev = torch.tensor(padded_counts, dtype=torch.long, device=value.device)
+        token_offsets = torch.cumsum(counts_dev, 0) - counts_dev
+        padded_offsets = torch.cumsum(padded_dev, 0) - padded_dev
+        shifts = padded_offsets - token_offsets
+        rows = torch.arange(total_valid_rows, device=value.device, dtype=torch.long)
+        row_expert = torch.searchsorted(torch.cumsum(counts_dev, 0), rows, right=True)
+        valid_rows = rows + shifts[row_expert]
     padded_value.index_copy_(0, valid_rows, value)
     return padded_value, padded_counts, valid_rows
 
