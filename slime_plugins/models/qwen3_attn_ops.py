@@ -243,40 +243,47 @@ def _fa4_varlen_forward(
     cu_kv: torch.Tensor,
     softmax_scale: float,
 ) -> torch.Tensor:
+    # One batched varlen call instead of the previous per-seq python loop.
+    # The FA4 varlen kernel computes every sequence independently (per-seq
+    # softmax, per-seq tiling), so batched output is bitwise identical to
+    # per-seq calls; verified empirically on random ragged batches incl.
+    # zero-length sequences (diff = 0 mismatched elements).
     from sglang.jit_kernel.flash_attention_v4 import flash_attn_varlen_func
 
     query = query.contiguous()
     key = key.contiguous()
     value = value.contiguous()
-    n_seq = cu_q.numel() - 1
-    outs = []
-    for seq_idx in range(n_seq):
-        seq_q = int(cu_q[seq_idx + 1] - cu_q[seq_idx])
-        seq_k = int(cu_kv[seq_idx + 1] - cu_kv[seq_idx])
-        if seq_q == 0:
-            outs.append(query.new_zeros(0, query.shape[1], query.shape[2]))
-            continue
-        q1 = query[int(cu_q[seq_idx]) : int(cu_q[seq_idx + 1])].contiguous()
-        k1 = key[int(cu_kv[seq_idx]) : int(cu_kv[seq_idx + 1])].contiguous()
-        v1 = value[int(cu_kv[seq_idx]) : int(cu_kv[seq_idx + 1])].contiguous()
-        o1 = flash_attn_varlen_func(
-            q1,
-            k1,
-            v1,
-            cu_seqlens_q=torch.tensor([0, seq_q], device=query.device, dtype=torch.int32),
-            cu_seqlens_k=torch.tensor([0, seq_k], device=query.device, dtype=torch.int32),
-            max_seqlen_q=seq_q,
-            max_seqlen_k=seq_k,
-            softmax_scale=float(softmax_scale),
-            causal=True,
-            softcap=0.0,
-        )
-        if isinstance(o1, tuple):
-            o1 = o1[0]
-        outs.append(o1)
-    if not outs:
+    if query.shape[0] == 0:
         return query.new_zeros(query.shape)
-    return torch.cat(outs, dim=0) if len(outs) > 1 else outs[0]
+
+    # max_seqlen is a kernel-launch scalar, so the seq boundaries must be
+    # read once.  One tolist() per tensor replaces the previous ~4n_seq
+    # implicit device syncs inside the per-seq loop.
+    cu_q_list = cu_q.tolist()
+    cu_kv_list = cu_kv.tolist()
+    max_seqlen_q = max(
+        (end - start for start, end in zip(cu_q_list, cu_q_list[1:])),
+        default=0,
+    )
+    max_seqlen_k = max(
+        (end - start for start, end in zip(cu_kv_list, cu_kv_list[1:])),
+        default=0,
+    )
+    out = flash_attn_varlen_func(
+        query,
+        key,
+        value,
+        cu_seqlens_q=cu_q,
+        cu_seqlens_k=cu_kv,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+        softmax_scale=float(softmax_scale),
+        causal=True,
+        softcap=0.0,
+    )
+    if isinstance(out, tuple):
+        out = out[0]
+    return out
 
 
 def _sdpa_one_seq(
@@ -319,9 +326,13 @@ def _fa_varlen_backward(
     dk = torch.zeros_like(key)
     dv = torch.zeros_like(value)
     n_seq = cu_q.numel() - 1
+    # Read boundaries once; the previous per-seq int(cu_q[i]) calls each
+    # forced a device sync (4 per sequence).  Gradient math is unchanged.
+    cu_q_list = cu_q.tolist()
+    cu_kv_list = cu_kv.tolist()
     for seq_idx in range(n_seq):
-        q0, q1 = int(cu_q[seq_idx]), int(cu_q[seq_idx + 1])
-        k0, k1 = int(cu_kv[seq_idx]), int(cu_kv[seq_idx + 1])
+        q0, q1 = cu_q_list[seq_idx], cu_q_list[seq_idx + 1]
+        k0, k1 = cu_kv_list[seq_idx], cu_kv_list[seq_idx + 1]
         if q1 == q0:
             continue
         q_s = query[q0:q1].detach().requires_grad_(True)
@@ -347,9 +358,12 @@ class _SGLangFA4Varlen(torch.autograd.Function):
         value: torch.Tensor,
         cu_q: torch.Tensor,
         cu_kv: torch.Tensor,
-        softmax_scale: torch.Tensor,
+        softmax_scale: float,
     ):
-        scale = float(softmax_scale.item())
+        # Keep the scale as a host float: it is only a kernel scalar and the
+        # previous CUDA-tensor round trip added one H2D copy plus one
+        # blocking .item() sync per layer per direction.
+        scale = float(softmax_scale)
         ctx.softmax_scale = scale
         ctx.save_for_backward(query, key, value, cu_q, cu_kv)
         return _fa4_varlen_forward(query, key, value, cu_q, cu_kv, scale)
@@ -378,7 +392,7 @@ def fa4_varlen_with_grad(
     *,
     softmax_scale: float,
 ):
-    scale = torch.tensor(float(softmax_scale), device=query.device, dtype=torch.float32)
+    scale = float(softmax_scale)
     return _SGLangFA4Varlen.apply(query, key, value, cu_q, cu_kv, scale)
 
 
