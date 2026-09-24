@@ -14,7 +14,9 @@ only the forward stays NVFP4 cutlass.
 from __future__ import annotations
 
 import logging
+import os
 import types
+import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -80,10 +82,13 @@ class _CutlassNvfp4MoEWithBF16Backward(torch.autograd.Function):
             permuted_probs,
             layout,
         )
-        state = _build_nvfp4_moe_state(
+        num_experts = layout.num_local_experts
+        state = _get_or_build_nvfp4_moe_state(
             module,
             layout,
-            module_name=module_name,
+            module_name,
+            weights[:num_experts],
+            weights[num_experts:],
         )
         output = _expert_major_cutlass_nvfp4_moe_forward(
             module,
@@ -178,27 +183,83 @@ def _stack_expert_nvfp4(
     return w_fp4, w_blockscale, w_scale_2
 
 
+_NVFP4_MOE_STATE_CACHE: "dict[int, tuple[weakref.ref, tuple[int, ...], _NvFp4MoEState]]" = {}
+
+
+def _nvfp4_state_cache_enabled() -> bool:
+    return os.environ.get("SLIME_NVFP4_MOE_STATE_CACHE", "1") != "0"
+
+
+def _nvfp4_weight_version_key(fc1_weights, fc2_weights) -> tuple[int, ...]:
+    """In-place version fingerprint of every expert weight (autograd _version)."""
+    return tuple(w._version for w in fc1_weights) + tuple(w._version for w in fc2_weights)
+
+
+def _get_or_build_nvfp4_moe_state(
+    module: torch.nn.Module,
+    layout: _MoELayout,
+    module_name: str,
+    fc1_weights: tuple[torch.Tensor, ...],
+    fc2_weights: tuple[torch.Tensor, ...],
+) -> _NvFp4MoEState:
+    """Return the cached quantized state, rebuilding only when weights changed.
+
+    Weights change via in-place writes (optimizer step, update_weights), each
+    of which bumps ``Tensor._version``; a frozen reference model keeps a
+    stable fingerprint and hits the cache every forward.  The weakref guards
+    against id() reuse after module garbage collection.
+    """
+    if not _nvfp4_state_cache_enabled():
+        return _build_nvfp4_moe_state(
+            module,
+            layout,
+            module_name=module_name,
+            fc1_weights=fc1_weights,
+            fc2_weights=fc2_weights,
+        )
+    key = id(module)
+    vers = _nvfp4_weight_version_key(fc1_weights, fc2_weights)
+    entry = _NVFP4_MOE_STATE_CACHE.get(key)
+    if entry is not None:
+        ref, cached_vers, state = entry
+        if ref() is module and cached_vers == vers:
+            return state
+    state = _build_nvfp4_moe_state(
+        module,
+        layout,
+        module_name=module_name,
+        fc1_weights=fc1_weights,
+        fc2_weights=fc2_weights,
+    )
+    _NVFP4_MOE_STATE_CACHE[key] = (weakref.ref(module), vers, state)
+    return state
+
+
 def _build_nvfp4_moe_state(
     experts: torch.nn.Module,
     layout: _MoELayout,
     *,
     module_name: str,
+    fc1_weights: tuple[torch.Tensor, ...] | None = None,
+    fc2_weights: tuple[torch.Tensor, ...] | None = None,
 ) -> _NvFp4MoEState:
     from sglang.srt.layers.moe.cutlass_moe_params import CutlassMoEParams, CutlassMoEType
     from sglang.srt.layers.quantization.utils import swizzle_blockscale
 
-    fc1_weights = _get_expert_weights(
-        experts.linear_fc1,
-        num_local_experts=layout.num_local_experts,
-        expected_shape=layout.fc1_weight_shape,
-        module_name=f"{module_name}.linear_fc1",
-    )
-    fc2_weights = _get_expert_weights(
-        experts.linear_fc2,
-        num_local_experts=layout.num_local_experts,
-        expected_shape=layout.fc2_weight_shape,
-        module_name=f"{module_name}.linear_fc2",
-    )
+    if fc1_weights is None:
+        fc1_weights = _get_expert_weights(
+            experts.linear_fc1,
+            num_local_experts=layout.num_local_experts,
+            expected_shape=layout.fc1_weight_shape,
+            module_name=f"{module_name}.linear_fc1",
+        )
+    if fc2_weights is None:
+        fc2_weights = _get_expert_weights(
+            experts.linear_fc2,
+            num_local_experts=layout.num_local_experts,
+            expected_shape=layout.fc2_weight_shape,
+            module_name=f"{module_name}.linear_fc2",
+        )
 
     w1_fp4, w1_blockscale, w1_scale_2 = _stack_expert_nvfp4(fc1_weights)
     w2_fp4, w2_blockscale, w2_scale_2 = _stack_expert_nvfp4(fc2_weights)
@@ -416,10 +477,12 @@ def _wrap_te_grouped_mlp_cutlass_nvfp4(
                 *fc2_weights,
             )
         else:
-            state = _build_nvfp4_moe_state(
+            state = _get_or_build_nvfp4_moe_state(
                 self,
                 layout,
-                module_name=module_name,
+                module_name,
+                fc1_weights,
+                fc2_weights,
             )
             output = _expert_major_cutlass_nvfp4_moe_forward(
                 self,
