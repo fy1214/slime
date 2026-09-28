@@ -233,6 +233,11 @@ def fused_qk_norm_rope_with_grad(
     return _SGLangFusedQKNormRoPE.apply(
         query, key, value, q_weight, k_weight, positions, eps_t, base_t
     )
+# Sequences per backward chunk: bounds the live SDPA saved-tensor memory while
+# amortizing autograd engine dispatch.  Chunk size does not affect gradient
+# values: every sequence's backward is computed by the same per-seq SDPA
+# kernels and accumulated into disjoint slices of the leaf gradients.
+_FA_BWD_SEQ_CHUNK = 64
 
 
 def _fa4_varlen_forward(
@@ -280,6 +285,11 @@ def _fa4_varlen_forward(
         softmax_scale=float(softmax_scale),
         causal=True,
         softcap=0.0,
+        # Pin the split-KV schedule: num_splits=1 keeps every sequence's
+        # kernel schedule independent of batch composition (batch invariance).
+        # This is currently the wrapper default; pass it explicitly so an
+        # upstream default change cannot silently break the invariant.
+        num_splits=1,
     )
     if isinstance(out, tuple):
         out = out[0]
@@ -322,28 +332,48 @@ def _fa_varlen_backward(
     cu_kv: torch.Tensor,
     softmax_scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    dq = torch.zeros_like(query)
-    dk = torch.zeros_like(key)
-    dv = torch.zeros_like(value)
     n_seq = cu_q.numel() - 1
-    # Read boundaries once; the previous per-seq int(cu_q[i]) calls each
-    # forced a device sync (4 per sequence).  Gradient math is unchanged.
+    # Read boundaries once; per-seq int(cu_q[i]) calls each forced a device
+    # sync (4 per sequence).
     cu_q_list = cu_q.tolist()
     cu_kv_list = cu_kv.tolist()
-    for seq_idx in range(n_seq):
-        q0, q1 = cu_q_list[seq_idx], cu_q_list[seq_idx + 1]
-        k0, k1 = cu_kv_list[seq_idx], cu_kv_list[seq_idx + 1]
-        if q1 == q0:
-            continue
-        q_s = query[q0:q1].detach().requires_grad_(True)
-        k_s = key[k0:k1].detach().requires_grad_(True)
-        v_s = value[k0:k1].detach().requires_grad_(True)
-        with torch.enable_grad():
-            out_s = _sdpa_one_seq(q_s, k_s, v_s, softmax_scale)
-        out_s.backward(grad_output[q0:q1].contiguous())
-        dq[q0:q1] = q_s.grad
-        dk[k0:k1] = k_s.grad
-        dv[k0:k1] = v_s.grad
+
+    # One set of graph leaves for the whole packed batch.  Slicing a leaf in
+    # the per-seq loop lets autograd accumulate every chunk's gradient into
+    # leaf.grad at exactly the positions the old per-seq copy-back wrote, so
+    # the returned gradients stay bitwise identical while the autograd engine
+    # is invoked once per chunk instead of once per sequence (~1900 -> ~30
+    # times per layer).  Sequences are processed in bounded chunks to cap the
+    # live SDPA saved-tensor memory.
+    q_leaf = query.detach().requires_grad_(True)
+    k_leaf = key.detach().requires_grad_(True)
+    v_leaf = value.detach().requires_grad_(True)
+
+    with torch.enable_grad():
+        for chunk_start in range(0, n_seq, _FA_BWD_SEQ_CHUNK):
+            chunk_end = min(chunk_start + _FA_BWD_SEQ_CHUNK, n_seq)
+            outs = []
+            grads = []
+            for seq_idx in range(chunk_start, chunk_end):
+                q0, q1 = cu_q_list[seq_idx], cu_q_list[seq_idx + 1]
+                k0, k1 = cu_kv_list[seq_idx], cu_kv_list[seq_idx + 1]
+                if q1 == q0:
+                    continue
+                outs.append(
+                    _sdpa_one_seq(
+                        q_leaf[q0:q1],
+                        k_leaf[k0:k1],
+                        v_leaf[k0:k1],
+                        softmax_scale,
+                    )
+                )
+                grads.append(grad_output[q0:q1].contiguous())
+            if outs:
+                torch.autograd.backward(outs, grads)
+
+    dq = q_leaf.grad if q_leaf.grad is not None else torch.zeros_like(query)
+    dk = k_leaf.grad if k_leaf.grad is not None else torch.zeros_like(key)
+    dv = v_leaf.grad if v_leaf.grad is not None else torch.zeros_like(value)
     return dq, dk, dv
 
 
