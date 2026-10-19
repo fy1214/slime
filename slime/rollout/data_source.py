@@ -144,7 +144,11 @@ class RolloutDataSource(DataSource):
 
         path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
-            if getattr(self.args, "deterministic_sampling_seed_mode", "group") == "sample":
+            if (
+                rollout_id is not None
+                and rollout_id >= 0
+                and getattr(self.args, "deterministic_sampling_seed_mode", "group") == "sample"
+            ):
                 raise FileNotFoundError(f"Sample seed mode requires the saved rollout dataset state: {path}")
             logger.info(f"Checkpoint {path} does not exist.")
             return
